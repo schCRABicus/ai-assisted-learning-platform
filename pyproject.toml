@@ -1,0 +1,30 @@
+[project]
+name = "agentic-learning-portal"
+version = "0.1.0"
+description = "Agentic learning portal"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "dotenv>=0.9.9",
+    "google>=3.0.0",
+    "pydantic>=2.13.4",
+    "pydantic-ai-slim[google]>=2.26.0",
+]
+
+[project.scripts]
+run-app = "agentic_learning_portal.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+# Adds the upper bound to fix the warning message
+requires = ["uv_build>=0.1,<0.12"]
+build-backend = "uv_build"
