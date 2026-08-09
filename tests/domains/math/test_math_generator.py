@@ -6,14 +6,22 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_learning_portal.api.generator import DEFAULT_SYSTEM_PROMPT, Generator
+from agentic_learning_portal.api.model import GeneratedTask, VerificationResult
 from agentic_learning_portal.domains.math.generator import MathProblemGenerator
-from agentic_learning_portal.api.model import GeneratedTask
+from agentic_learning_portal.domains.math.judge import WolframAlphaJudge
 from agentic_learning_portal.domains.math.model import MathProblemGenerationPromptInput
 
 VALID_MATH_PROBLEM = {
     "topic": "Lego",
     "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
     "complexity": "easy",
+    "correct_answer": 12,
+}
+
+INVALID_MATH_PROBLEM = {
+    "topic": "Lego",
+    "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
+    "complexity": "super-hard",
     "correct_answer": 12,
 }
 
@@ -174,3 +182,206 @@ async def test_generate_uses_default_system_prompt(
         await generator.generate(prompt_input)
 
     assert mock_call.await_args.kwargs["system_prompt"] == DEFAULT_SYSTEM_PROMPT
+
+
+def _verification_result(verified: bool) -> VerificationResult:
+    return VerificationResult(
+        judge="wolframalpha",
+        verified=verified,
+        expected_answer=12,
+        judge_answer="12" if verified else "15",
+        detail="Answers match." if verified else "Expected 12, Wolfram|Alpha returned '15'.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_validated_task_without_judge(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    with patch.object(
+        Generator,
+        "_call_llm",
+        new_callable=AsyncMock,
+        return_value=VALID_MATH_PROBLEM,
+    ) as mock_call:
+        result = await generator.generate(prompt_input)
+
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+    mock_call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_verifies_with_judge(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ),
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            return_value=_verification_result(True),
+        ) as mock_verify,
+    ):
+        result = await generator.generate(prompt_input, judge=judge)
+
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+    mock_verify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_on_judge_mismatch(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ) as mock_call,
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            side_effect=[_verification_result(False), _verification_result(True)],
+        ),
+    ):
+        result = await generator.generate(prompt_input, judge=judge)
+
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+    assert mock_call.await_count == 2
+    retry_prompt = mock_call.await_args_list[1].kwargs["user_prompt"]
+    assert "could not confirm" in retry_prompt
+    assert "correct_answer" in retry_prompt
+    assert "15" not in retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_after_max_retries_on_judge_mismatch(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ) as mock_call,
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            return_value=_verification_result(False),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="Max retries reached"):
+            await generator.generate(prompt_input, judge=judge, retries=2)
+
+    assert mock_call.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_after_max_retries_on_schema_failure(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    with patch.object(
+        Generator,
+        "_call_llm",
+        new_callable=AsyncMock,
+        return_value=INVALID_MATH_PROBLEM,
+    ) as mock_call:
+        with pytest.raises(RuntimeError, match="Max retries reached"):
+            await generator.generate(prompt_input, retries=2)
+
+    assert mock_call.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_on_schema_failure_then_succeeds(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            side_effect=[INVALID_MATH_PROBLEM, VALID_MATH_PROBLEM],
+        ),
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            return_value=_verification_result(True),
+        ),
+    ):
+        result = await generator.generate(prompt_input, judge=judge)
+
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+
+
+def test_create_verification_retry_prompt_includes_context() -> None:
+    task = GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+
+    retry_prompt = MathProblemGenerator._create_verification_retry_prompt(
+        original_prompt="generate a task",
+        task=task,
+        verification=_verification_result(False),
+    )
+
+    assert "generate a task" in retry_prompt
+    assert task.model_dump_json() in retry_prompt
+    assert "could not confirm" in retry_prompt
+    assert "respond ONLY with valid JSON" in retry_prompt
+
+
+def test_create_verification_retry_prompt_excludes_judge_answer() -> None:
+    task = GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+
+    retry_prompt = MathProblemGenerator._create_verification_retry_prompt(
+        original_prompt="generate a task",
+        task=task,
+        verification=_verification_result(False),
+    )
+
+    assert "15" not in retry_prompt
+    assert "recompute" in retry_prompt.lower()
+
+
+def test_create_verification_retry_prompt_asks_to_clarify_when_judge_cannot_compute() -> None:
+    task = GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+    inconclusive = VerificationResult(
+        judge="wolframalpha",
+        verified=False,
+        expected_answer=12,
+        judge_answer=None,
+        detail="Could not translate the problem into a Wolfram|Alpha query.",
+    )
+
+    retry_prompt = MathProblemGenerator._create_verification_retry_prompt(
+        original_prompt="generate a task",
+        task=task,
+        verification=inconclusive,
+    )
+
+    assert "could not compute" in retry_prompt
+    assert "ambiguous" in retry_prompt

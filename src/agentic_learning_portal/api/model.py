@@ -31,3 +31,28 @@ class GeneratedTask(BaseModel):
         ...,
         description="The correct answer to the problem, which can be an integer, float, or string."
     )
+
+
+class VerificationResult(BaseModel):
+    """Outcome of an independent judge checking a generated task against ground truth."""
+
+    judge: str = Field(
+        ...,
+        description="Name of the judge (e.g., 'wolframalpha').",
+    )
+    verified: bool = Field(
+        ...,
+        description="Whether the generated answer matches the judge's ground truth.",
+    )
+    expected_answer: str | int | float | None = Field(
+        default=None,
+        description="The answer the LLM produced (task.correct_answer).",
+    )
+    judge_answer: str | None = Field(
+        default=None,
+        description="The answer reported by the judge, as raw text.",
+    )
+    detail: str = Field(
+        default="",
+        description="Human-readable explanation of the match or mismatch.",
+    )

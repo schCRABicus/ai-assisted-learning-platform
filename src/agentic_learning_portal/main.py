@@ -1,7 +1,15 @@
-from .domains.math import MathProblemGenerationPromptInput, MathProblemGenerator
-from pydantic_ai import Agent
-from dotenv import load_dotenv
 import asyncio
+import logging
+import os
+
+from dotenv import load_dotenv
+
+from .domains.math import MathProblemGenerationPromptInput, MathProblemGenerator, WolframAlphaJudge
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(name)s: %(message)s",
+)
 
 load_dotenv()
 
@@ -17,8 +25,13 @@ async def generate_math_problem():
     )
 
     print(f"Asking LLM to generate a math problem for grade {input.grade} student with {' and '.join(subtopics)}...")
+    judge = WolframAlphaJudge() if os.environ.get("WOLFRAM_APP_ID") else None
+    if judge is None:
+        print("WOLFRAM_APP_ID not set — skipping Wolfram|Alpha verification.")
+
     task = await MathProblemGenerator().generate(
         prompt_input=input,
+        judge=judge,
     )
 
     print("\n--- LLM Response ---")

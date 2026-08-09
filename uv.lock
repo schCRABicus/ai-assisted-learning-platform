@@ -9,6 +9,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dotenv" },
     { name = "google" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["google"] },
 ]
@@ -23,6 +24,7 @@ dev = [
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google", specifier = ">=3.0.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-ai-slim", extras = ["google"], specifier = ">=2.26.0" },
 ]
