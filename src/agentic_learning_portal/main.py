@@ -1,4 +1,4 @@
-from .domains.math import MathProblem, MathProblemGenerationPromptInput, MathProblemGenerator
+from .domains.math import MathProblemGenerationPromptInput, MathProblemGenerator
 from pydantic_ai import Agent
 from dotenv import load_dotenv
 import asyncio

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from agentic_learning_portal.api.model import ProblemGenerationPromptInput
 
@@ -42,24 +42,3 @@ class MathProblemGenerationPromptInput(ProblemGenerationPromptInput):
             f"{self.grade} student with {subtopics}. Set the problem in a "
             f"{self.context} context. Keep it structured."
         )
-
-
-class MathProblem(BaseModel):
-    """Pydantic model representing a mathematical problem."""
-
-    topic: str = Field(
-        ...,
-        description="The mathematical topic (e.g., 'Algebra', 'Calculus', 'Geometry').",
-    )
-    text: str = Field(
-        ...,
-        description="The actual text or question of the mathematical problem.",
-    )
-    complexity: Literal["easy", "medium", "hard"] = Field(
-        ...,
-        description="The difficulty level of the problem.",
-    )
-    correct_answer: str | int | float = Field(
-        ...,
-        description="The correct answer to the problem, which can be an integer, float, or string.",
-    )

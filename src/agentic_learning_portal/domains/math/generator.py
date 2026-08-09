@@ -1,5 +1,6 @@
 from agentic_learning_portal.api.generator import DEFAULT_SYSTEM_PROMPT, Generator
-from agentic_learning_portal.domains.math.model import MathProblem, MathProblemGenerationPromptInput
+from agentic_learning_portal.api.model import GeneratedTask
+from agentic_learning_portal.domains.math.model import MathProblemGenerationPromptInput
 
 
 class MathProblemGenerator(Generator):
@@ -10,9 +11,9 @@ class MathProblemGenerator(Generator):
         prompt_input: MathProblemGenerationPromptInput,
         *,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-    ) -> MathProblem:
+    ) -> GeneratedTask:
         return await super().generate(
             prompt_input,
-            MathProblem,
+            GeneratedTask,
             system_prompt=system_prompt,
         )

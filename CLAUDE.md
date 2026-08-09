@@ -24,8 +24,8 @@ The package is split into a generic **api layer** and domain-specific **domains*
 
 ### domain layer (e.g. `domains/math/`)
 
-- `domains/math/model.py` — `MathProblemGenerationPromptInput(ProblemGenerationPromptInput)` adds domain fields (`topic`, `subtopics`, `context`, `complexity`, `grade`) and implements `build_user_prompt()`. `MathProblem` is the typed LLM output (currently a plain `BaseModel`, not a `GeneratedTask` subclass).
-- `domains/math/generator.py` — `MathProblemGenerator(Generator)` pins the output type to `MathProblem`.
+- `domains/math/model.py` — `MathProblemGenerationPromptInput(ProblemGenerationPromptInput)` adds domain fields (`topic`, `subtopics`, `context`, `complexity`, `grade`) and implements `build_user_prompt()`. The typed LLM output is the api layer's generic `GeneratedTask`.
+- `domains/math/generator.py` — `MathProblemGenerator(Generator)` pins the output type to `GeneratedTask`.
 - `domains/math/__init__.py` — re-exports the domain's public API.
 
 ### The generation flow

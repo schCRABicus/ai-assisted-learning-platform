@@ -1,8 +1,7 @@
 from .generator import MathProblemGenerator
-from .model import MathProblem, MathProblemGenerationPromptInput
+from .model import MathProblemGenerationPromptInput
 
 __all__ = [
-    "MathProblem",
     "MathProblemGenerationPromptInput",
     "MathProblemGenerator",
 ]

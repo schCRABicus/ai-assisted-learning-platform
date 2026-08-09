@@ -7,7 +7,8 @@ from pydantic import ValidationError
 
 from agentic_learning_portal.api.generator import DEFAULT_SYSTEM_PROMPT, Generator
 from agentic_learning_portal.domains.math.generator import MathProblemGenerator
-from agentic_learning_portal.domains.math.model import MathProblem, MathProblemGenerationPromptInput
+from agentic_learning_portal.api.model import GeneratedTask
+from agentic_learning_portal.domains.math.model import MathProblemGenerationPromptInput
 
 VALID_MATH_PROBLEM = {
     "topic": "Lego",
@@ -121,7 +122,7 @@ async def test_generate_returns_math_problem(
     ):
         result = await generator.generate(prompt_input)
 
-    assert result == MathProblem.model_validate(VALID_MATH_PROBLEM)
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
 
 
 @pytest.mark.asyncio
@@ -138,7 +139,7 @@ async def test_generate_passes_built_user_prompt(
         await generator.generate(prompt_input)
 
     assert mock_call.await_args.kwargs["user_prompt"] == prompt_input.build_user_prompt()
-    assert mock_call.await_args.kwargs["output_type"] is MathProblem
+    assert mock_call.await_args.kwargs["output_type"] is GeneratedTask
 
 
 @pytest.mark.asyncio
