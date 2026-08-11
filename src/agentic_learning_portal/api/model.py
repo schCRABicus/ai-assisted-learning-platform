@@ -56,3 +56,16 @@ class VerificationResult(BaseModel):
         default="",
         description="Human-readable explanation of the match or mismatch.",
     )
+
+
+class Judge(ABC):
+    """Contract that every verification judge must satisfy.
+
+    A judge inspects a generated ``task`` and returns its verdict. The task is
+    accepted only when every judge in the ensemble verifies it. Both
+    ``WolframAlphaJudge`` and ``QwenMathJudge`` implement this interface.
+    """
+
+    @abstractmethod
+    async def verify(self, task: GeneratedTask) -> VerificationResult:
+        """Return the judge's verdict on ``task``."""

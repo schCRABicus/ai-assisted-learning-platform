@@ -9,7 +9,7 @@ dependencies = [
     "google>=3.0.0",
     "httpx>=0.27",
     "pydantic>=2.13.4",
-    "pydantic-ai-slim[google]>=2.26.0",
+    "pydantic-ai-slim[google,groq]>=2.26.0",
 ]
 
 [project.scripts]

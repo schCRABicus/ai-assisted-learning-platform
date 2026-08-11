@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agentic_learning_portal.api.model import GeneratedTask
-from agentic_learning_portal.domains.math.judge import (
-    MathQuery,
-    WolframAlphaJudge,
+from agentic_learning_portal.domains.math._comparison import (
     _answers_match,
     _normalize,
     _to_number,
 )
+from agentic_learning_portal.domains.math.wa_judge import MathQuery, WolframAlphaJudge
 
 
 def _task(correct_answer: str | int | float, text: str = "3*4") -> GeneratedTask:
@@ -69,29 +67,6 @@ def test_answers_match_none_wolfram_answer() -> None:
     assert not _answers_match(12, None)
 
 
-# --- extraction --------------------------------------------------------------
-
-
-def test_extract_answer_prefers_result_pod() -> None:
-    pods = [
-        {"title": "Input interpretation", "text": "3*4"},
-        {"title": "Result", "text": "12"},
-    ]
-    assert WolframAlphaJudge._extract_answer(pods) == "12"
-
-
-def test_extract_answer_falls_back_to_first_non_empty_pod() -> None:
-    pods = [
-        {"title": "Input interpretation", "text": "3*4"},
-    ]
-    assert WolframAlphaJudge._extract_answer(pods) == "3*4"
-
-
-def test_extract_answer_returns_none_when_all_empty() -> None:
-    assert WolframAlphaJudge._extract_answer([{"title": "Result", "text": ""}]) is None
-    assert WolframAlphaJudge._extract_answer([]) is None
-
-
 # --- judge -------------------------------------------------------------------
 
 
@@ -109,7 +84,7 @@ async def test_verify_returns_matching_result() -> None:
             judge,
             "_query_wolfram",
             new_callable=AsyncMock,
-            return_value=[{"title": "Result", "text": "12"}],
+            return_value="12",
         ),
     ):
         result = await judge.verify(_task(12))
@@ -134,7 +109,7 @@ async def test_verify_reports_mismatch() -> None:
             judge,
             "_query_wolfram",
             new_callable=AsyncMock,
-            return_value=[{"title": "Result", "text": "15"}],
+            return_value="15",
         ),
     ):
         result = await judge.verify(_task(12))
@@ -158,7 +133,7 @@ async def test_verify_queries_translated_expression() -> None:
             judge,
             "_query_wolfram",
             new_callable=AsyncMock,
-            return_value=[{"title": "Result", "text": "12"}],
+            return_value="12",
         ) as mock_query,
     ):
         await judge.verify(_task(12, text="What is 3 times 4?"))
@@ -181,7 +156,7 @@ async def test_verify_handles_unparseable_wolfram_answer() -> None:
             judge,
             "_query_wolfram",
             new_callable=AsyncMock,
-            return_value=[{"title": "No result", "text": ""}],
+            return_value=None,
         ),
     ):
         result = await judge.verify(_task(12))
@@ -222,12 +197,79 @@ async def test_query_wolfram_raises_without_app_id() -> None:
         await judge._query_wolfram("3*4")
 
 
+def _mock_wolfram_client(response: object) -> MagicMock:
+    """Return a MagicMock that stands in for ``httpx.AsyncClient``."""
+    fake_client = SimpleNamespace(get=AsyncMock(return_value=response))
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=fake_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+@pytest.mark.asyncio
+async def test_query_wolfram_returns_plain_text_answer() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    fake_response = SimpleNamespace(status_code=200, text=" 12 ")
+    fake_response.raise_for_status = lambda: None
+
+    with patch(
+        "agentic_learning_portal.domains.math.wa_judge.httpx.AsyncClient",
+        return_value=_mock_wolfram_client(fake_response),
+    ) as mock_client:
+        answer = await judge._query_wolfram("3*4")
+
+    assert answer == "12"
+    mock_client.assert_called_once()
+    fake_client = mock_client.return_value.__aenter__.return_value
+    fake_client.get.assert_awaited_once_with(
+        "https://api.wolframalpha.com/v1/result",
+        params={"appid": "test-app-id", "i": "3*4"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_wolfram_returns_none_when_not_understood() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    fake_response = SimpleNamespace(
+        status_code=501,
+        text="Wolfram|Alpha did not understand your input",
+    )
+
+    with patch(
+        "agentic_learning_portal.domains.math.wa_judge.httpx.AsyncClient",
+        return_value=_mock_wolfram_client(fake_response),
+    ):
+        answer = await judge._query_wolfram("Crazy Dave has 8 packs of seeds")
+
+    assert answer is None
+
+
+@pytest.mark.asyncio
+async def test_query_wolfram_propagates_other_error_status() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+
+    def _raise() -> None:
+        raise RuntimeError("HTTP 403")
+
+    fake_response = SimpleNamespace(status_code=403, text="Forbidden")
+    fake_response.raise_for_status = _raise
+
+    with (
+        patch(
+            "agentic_learning_portal.domains.math.wa_judge.httpx.AsyncClient",
+            return_value=_mock_wolfram_client(fake_response),
+        ),
+        pytest.raises(RuntimeError, match="HTTP 403"),
+    ):
+        await judge._query_wolfram("3*4")
+
+
 @pytest.mark.asyncio
 async def test_translate_to_query_extracts_expression() -> None:
     judge = WolframAlphaJudge(app_id="test-app-id")
     fake_response = SimpleNamespace(output=MathQuery(query="(7*12-28)/8"))
 
-    with patch("agentic_learning_portal.domains.math.judge.Agent") as mock_agent:
+    with patch("agentic_learning_portal.domains.math.wa_judge.Agent") as mock_agent:
         mock_agent.return_value.run = AsyncMock(return_value=fake_response)
         query = await judge._translate_to_query("Crazy Dave has 7 boxes...")
 
@@ -238,51 +280,24 @@ async def test_translate_to_query_extracts_expression() -> None:
 async def test_translate_to_query_returns_empty_on_error() -> None:
     judge = WolframAlphaJudge(app_id="test-app-id")
 
-    with patch("agentic_learning_portal.domains.math.judge.Agent") as mock_agent:
+    with patch("agentic_learning_portal.domains.math.wa_judge.Agent") as mock_agent:
         mock_agent.return_value.run = AsyncMock(side_effect=RuntimeError("boom"))
         query = await judge._translate_to_query("some problem")
 
     assert query == ""
 
 
-def _parse(xml_text: str) -> list[dict[str, str]]:
-    return WolframAlphaJudge._parse_pods(ET.fromstring(xml_text))
+@pytest.mark.asyncio
+async def test_translate_to_query_retries_when_first_call_fails() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
 
+    with patch(
+        "agentic_learning_portal.domains.math.wa_judge.Agent"
+    ) as mock_agent:
+        mock_agent.return_value.run = AsyncMock(
+            side_effect=[RuntimeError("boom"), SimpleNamespace(output=MathQuery(query="3*4"))]
+        )
+        query = await judge._translate_to_query("What is 3 times 4?", retries=3)
 
-def test_parse_pods_extracts_pod_titles_and_text() -> None:
-    xml_text = """
-    <queryresult success="true" error="false">
-      <pod title="Input interpretation">
-        <subpod><plaintext>3*4</plaintext></subpod>
-      </pod>
-      <pod title="Result">
-        <subpod><plaintext>12</plaintext></subpod>
-      </pod>
-    </queryresult>
-    """
+    assert query == "3*4"
 
-    assert _parse(xml_text) == [
-        {"title": "Input interpretation", "text": "3*4"},
-        {"title": "Result", "text": "12"},
-    ]
-
-
-def test_parse_pods_skips_subpod_without_plaintext() -> None:
-    xml_text = """
-    <queryresult success="true" error="false">
-      <pod title="Visual">
-        <subpod><img src="http://example.com/plot.png" /></subpod>
-      </pod>
-      <pod title="Result">
-        <subpod><plaintext>  12  </plaintext></subpod>
-      </pod>
-    </queryresult>
-    """
-
-    assert _parse(xml_text) == [{"title": "Result", "text": "12"}]
-
-
-def test_parse_pods_returns_empty_for_no_pods() -> None:
-    xml_text = '<queryresult success="false" error="false" numpods="0" />'
-
-    assert _parse(xml_text) == []
