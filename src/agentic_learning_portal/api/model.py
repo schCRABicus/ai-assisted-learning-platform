@@ -31,6 +31,13 @@ class GeneratedTask(BaseModel):
         ...,
         description="The correct answer to the problem, which can be an integer, float, or string."
     )
+    solution: str = Field(
+        ...,
+        description=(
+            "Step-by-step explanation of how to arrive at the correct answer, "
+            "clear enough for a student to follow."
+        ),
+    )
 
 
 class VerificationResult(BaseModel):

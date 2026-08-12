@@ -13,6 +13,7 @@ VALID_TASK = {
     "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
     "complexity": "easy",
     "correct_answer": 12,
+    "solution": "Each box holds 4 bricks and there are 3 boxes, so the total is 3 × 4 = 12 bricks.",
 }
 
 INVALID_TASK = {
@@ -20,6 +21,7 @@ INVALID_TASK = {
     "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
     "complexity": "super-hard",
     "correct_answer": 12,
+    "solution": "Each box holds 4 bricks and there are 3 boxes, so the total is 3 × 4 = 12 bricks.",
 }
 
 
@@ -76,6 +78,19 @@ def test_validate_rejects_invalid_data(generator: Generator) -> None:
     assert validated is None
     assert error is not None
     assert "validation error" in error.lower()
+
+
+def test_validate_rejects_missing_solution(generator: Generator) -> None:
+    task_without_solution = {k: v for k, v in VALID_TASK.items() if k != "solution"}
+
+    validated, error = Generator._validate_response_matches_output_type(
+        GeneratedTask,
+        task_without_solution,
+    )
+
+    assert validated is None
+    assert error is not None
+    assert "solution" in error
 
 
 def test_create_retry_prompt_includes_context() -> None:

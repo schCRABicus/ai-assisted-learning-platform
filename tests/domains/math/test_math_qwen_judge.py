@@ -20,6 +20,7 @@ def _task(correct_answer: str | int | float, text: str = "3*4") -> GeneratedTask
             "text": text,
             "complexity": "easy",
             "correct_answer": correct_answer,
+            "solution": "Multiply the two numbers: 3 × 4 = 12.",
         }
     )
 

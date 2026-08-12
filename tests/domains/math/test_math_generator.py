@@ -16,6 +16,7 @@ VALID_MATH_PROBLEM = {
     "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
     "complexity": "easy",
     "correct_answer": 12,
+    "solution": "Each box holds 4 bricks and there are 3 boxes, so the total is 3 × 4 = 12 bricks.",
 }
 
 INVALID_MATH_PROBLEM = {
@@ -23,6 +24,7 @@ INVALID_MATH_PROBLEM = {
     "text": "You have 3 boxes with 4 bricks each. How many bricks do you have?",
     "complexity": "super-hard",
     "correct_answer": 12,
+    "solution": "Each box holds 4 bricks and there are 3 boxes, so the total is 3 × 4 = 12 bricks.",
 }
 
 

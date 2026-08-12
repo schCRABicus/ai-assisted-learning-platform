@@ -12,7 +12,9 @@ OutputT = TypeVar("OutputT", bound=GeneratedTask)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are an experienced teacher. "
-    "Generate a structured learning task that matches the given parameters."
+    "Generate a structured learning task that matches the given parameters. "
+    "Include the problem text, the correct answer, and a step-by-step solution "
+    "explaining how to arrive at that answer."
 )
 
 
