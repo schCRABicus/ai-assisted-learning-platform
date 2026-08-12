@@ -13,6 +13,8 @@ Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
 
 `pytest` runs in `asyncio_mode = "auto"` (configured in `pyproject.toml`), so async tests need no `@pytest.mark.asyncio`.
 
+- Run the portal: `uv run run-portal` (or `uv run streamlit run src/agentic_learning_portal/app.py`) — a single Streamlit app exposing each page as an endpoint via `st.navigation`: the admin page at `/admin` (task generation) and a student placeholder at `/student`. Needs a `GOOGLE_API_KEY` in `.env` for the subtopic-suggestion call and for generation.
+
 ## Architecture
 
 The package is split into a generic **api layer** and domain-specific **domains** that plug into it. New problem domains follow the same pattern as `math`.
@@ -30,6 +32,26 @@ The package is split into a generic **api layer** and domain-specific **domains*
 - `domains/math/qwen_judge.py` — `QwenMathJudge`: LLM judge using `qwen/qwen3.6-27b` (a math-capable reasoning model on Groq — a different family/provider than both the Gemini generator and the Groq Llama translator). Feeds `GeneratedTask.text` directly to Groq's OpenAI-compatible chat API (`POST https://api.groq.com/openai/v1/chat/completions`, `GROQ_API_KEY` from `.env`), extracts a single answer from the completion — stripping `<think>...</think>` reasoning first, then `\boxed{...}`, then the last number — and compares it with `correct_answer` via the shared helpers. HTTP 429 (rate limit) or any transport error is treated as unverifiable (return `None` → `VerificationResult(verified=False)`). Override the model via `QwenMathJudge(model=...)`. `_query_groq` and `_extract_answer` are the mockable seams for tests.
 - `domains/math/_comparison.py` — shared answer-comparison helpers (`_normalize`, `_to_number`, `_answers_match`) used by both judges.
 - `domains/math/__init__.py` — re-exports the domain's public API.
+
+### Streamlit portal (single app, one endpoint per page)
+
+- `app.py` — the single Streamlit entry point. `st.navigation` maps each page
+  to a distinct URL: `pages/admin.py` → `/admin` (default), and a
+  `pages/student.py` placeholder → `/student`. Launch with `uv run run-portal`.
+- `pages/admin.py` — the admin endpoint. As soon as a free-text topic is
+  entered, an LLM call populates a multi-select of subtopic suggestions
+  (session state records the topic they were generated for so it fires once
+  per topic change); grade/complexity dropdowns plus a context field drive
+  generation via `MathProblemGenerator`, and a single prominent "Generate
+  task" button presents the resulting task (problem, correct answer,
+  solution). Generation is split across reruns — the button disables itself
+  for the whole (blocking) LLM call and re-enables on completion, so a
+  double-click can't start a second generation. A comma-separated field lets
+  the admin add subtopics manually.
+- `admin/subtopic_suggester.py` — `suggest_subtopics(topic)`: a best-effort
+  `pydantic_ai` `Agent` (default `google:gemini-3.5-flash`) that returns
+  trimmed, de-duplicated subtopic suggestions for a topic, or `[]` on any
+  failure so the UI degrades gracefully. Tested in `tests/admin/`.
 
 ### The generation flow
 

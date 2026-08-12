@@ -10,10 +10,12 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.13.4",
     "pydantic-ai-slim[google,groq]>=2.26.0",
+    "streamlit>=1.41",
 ]
 
 [project.scripts]
 run-app = "agentic_learning_portal.main:main"
+run-portal = "agentic_learning_portal.app:main"
 
 [dependency-groups]
 dev = [
