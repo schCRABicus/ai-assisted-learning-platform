@@ -10,6 +10,7 @@ import asyncio
 
 import streamlit as st
 
+from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.admin.subtopic_suggester import suggest_subtopics
 from agentic_learning_portal.domains.math import (
     MathProblemGenerationPromptInput,
@@ -186,7 +187,7 @@ if task is not None:
     meta[3].markdown(f"**🧩 Subtopics:** {', '.join(prompt_input.subtopics)}")
 
     st.markdown("---")
-    st.markdown(f"**📝 Problem**\n\n{task.text}")
+    st.markdown(f"**📝 Problem**\n\n{latex_to_plain_text(task.text)}")
     st.markdown(f"**✅ Correct answer:** `{task.correct_answer}`")
     with st.expander("💡 Solution", expanded=False):
-        st.markdown(task.solution)
+        st.markdown(latex_to_plain_text(task.solution))

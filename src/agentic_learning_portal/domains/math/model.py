@@ -41,5 +41,8 @@ class MathProblemGenerationPromptInput(ProblemGenerationPromptInput):
             f"Generate a {self.topic} math problem of {self.complexity} complexity for grade "
             f"{self.grade} student with {subtopics}. Set the problem in a "
             f"{self.context} context. Include a step-by-step solution. "
-            f"Keep it structured."
+            f"Keep it structured. "
+            f"Write all math in plain text (for example '3 × 4 = 12'), never in "
+            f"LaTeX — no dollar signs, backslashes, or commands like \\text{{}} "
+            f"or \\frac{{}}."
         )

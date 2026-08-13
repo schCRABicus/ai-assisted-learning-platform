@@ -35,7 +35,8 @@ class GeneratedTask(BaseModel):
         ...,
         description=(
             "Step-by-step explanation of how to arrive at the correct answer, "
-            "clear enough for a student to follow."
+            "clear enough for a student to follow. Write math in plain text, "
+            "not LaTeX markup."
         ),
     )
 

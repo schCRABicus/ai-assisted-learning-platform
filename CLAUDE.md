@@ -49,7 +49,10 @@ The package is split into a generic **api layer** and domain-specific **domains*
   solution). Generation is split across reruns — the button disables itself
   for the whole (blocking) LLM call and re-enables on completion, so a
   double-click can't start a second generation. A comma-separated field lets
-  the admin add subtopics manually.
+  the admin add subtopics manually. The problem text and solution pass through
+  `admin/formatting.latex_to_plain_text` before rendering, because the model
+  occasionally emits LaTeX (`$$...$$`, `\text{}`, `\frac{}{}`, a stray `\558`)
+  despite prompt instructions to write math in plain text.
 - `admin/subtopic_suggester.py` — `suggest_subtopics(topic)`: a best-effort
   structured LLM call through `api/llm.ask_ai_for_structured_response` (default
   `google:gemini-3.5-flash`) that returns trimmed, de-duplicated subtopic

@@ -14,7 +14,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are an experienced teacher. "
     "Generate a structured learning task that matches the given parameters. "
     "Include the problem text, the correct answer, and a step-by-step solution "
-    "explaining how to arrive at that answer."
+    "explaining how to arrive at that answer. "
+    "Write all math in plain text (for example '3 × 4 = 12'), never in LaTeX — "
+    "no dollar signs, backslashes, or LaTeX commands like \\text{} or \\frac{}."
 )
 
 
