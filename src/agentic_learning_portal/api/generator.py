@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
-from pydantic_ai import Agent
 
+from agentic_learning_portal.api.llm import ask_ai_for_structured_response
 from agentic_learning_portal.api.model import GeneratedTask, ProblemGenerationPromptInput
 
 InputT = TypeVar("InputT", bound=ProblemGenerationPromptInput)
@@ -86,18 +86,12 @@ class Generator:
         user_prompt: str,
         output_type: type[OutputT],
     ) -> object:
-        agent = Agent(
+        return await ask_ai_for_structured_response(
             model=model,
             output_type=output_type,
             system_prompt=system_prompt,
-        )
-
-        response = await agent.run(
             user_prompt=user_prompt,
-            output_type=output_type,
         )
-
-        return response.output
 
     @staticmethod
     def _validate_response_matches_output_type(

@@ -1,4 +1,4 @@
-# pydantic-sandbox
+# ai-assisted-learning-portal
 
 A sandbox project for experimenting with **LLMs** and **Streamlit** by building **context-aware math problems**.
 

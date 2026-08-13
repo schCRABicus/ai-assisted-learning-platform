@@ -11,7 +11,11 @@ from agentic_learning_portal.domains.math._comparison import (
     _normalize,
     _to_number,
 )
-from agentic_learning_portal.domains.math.wa_judge import MathQuery, WolframAlphaJudge
+from agentic_learning_portal.domains.math.wa_judge import (
+    TRANSLATOR_SYSTEM_PROMPT,
+    MathQuery,
+    WolframAlphaJudge,
+)
 
 
 def _task(correct_answer: str | int | float, text: str = "3*4") -> GeneratedTask:
@@ -268,21 +272,32 @@ async def test_query_wolfram_propagates_other_error_status() -> None:
 @pytest.mark.asyncio
 async def test_translate_to_query_extracts_expression() -> None:
     judge = WolframAlphaJudge(app_id="test-app-id")
-    fake_response = SimpleNamespace(output=MathQuery(query="(7*12-28)/8"))
 
-    with patch("agentic_learning_portal.domains.math.wa_judge.Agent") as mock_agent:
-        mock_agent.return_value.run = AsyncMock(return_value=fake_response)
+    with patch(
+        "agentic_learning_portal.domains.math.wa_judge.ask_ai_for_structured_response",
+        new_callable=AsyncMock,
+        return_value=MathQuery(query="(7*12-28)/8"),
+    ) as mock_run:
         query = await judge._translate_to_query("Crazy Dave has 7 boxes...")
 
     assert query == "(7*12-28)/8"
+    mock_run.assert_awaited_once_with(
+        model="groq:llama-3.3-70b-versatile",
+        output_type=MathQuery,
+        system_prompt=TRANSLATOR_SYSTEM_PROMPT,
+        user_prompt="Crazy Dave has 7 boxes...",
+    )
 
 
 @pytest.mark.asyncio
 async def test_translate_to_query_returns_empty_on_error() -> None:
     judge = WolframAlphaJudge(app_id="test-app-id")
 
-    with patch("agentic_learning_portal.domains.math.wa_judge.Agent") as mock_agent:
-        mock_agent.return_value.run = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch(
+        "agentic_learning_portal.domains.math.wa_judge.ask_ai_for_structured_response",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("boom"),
+    ):
         query = await judge._translate_to_query("some problem")
 
     assert query == ""
@@ -293,11 +308,10 @@ async def test_translate_to_query_retries_when_first_call_fails() -> None:
     judge = WolframAlphaJudge(app_id="test-app-id")
 
     with patch(
-        "agentic_learning_portal.domains.math.wa_judge.Agent"
-    ) as mock_agent:
-        mock_agent.return_value.run = AsyncMock(
-            side_effect=[RuntimeError("boom"), SimpleNamespace(output=MathQuery(query="3*4"))]
-        )
+        "agentic_learning_portal.domains.math.wa_judge.ask_ai_for_structured_response",
+        new_callable=AsyncMock,
+        side_effect=[RuntimeError("boom"), MathQuery(query="3*4")],
+    ):
         query = await judge._translate_to_query("What is 3 times 4?", retries=3)
 
     assert query == "3*4"

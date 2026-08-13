@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentic_learning_portal.api.llm import LLMResponseError, LLMUnavailableError
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.domains.math.qwen_judge import (
     GROQ_CHAT_URL,
     QwenMathJudge,
+    SOLVER_SYSTEM_PROMPT,
 )
 
 MODEL = "qwen/qwen3.6-27b"
@@ -168,55 +170,41 @@ async def test_query_groq_raises_without_api_key() -> None:
 @pytest.mark.asyncio
 async def test_query_groq_posts_to_groq_endpoint() -> None:
     judge = QwenMathJudge(api_key="test-key")
-    fake_response = MagicMock()
-    fake_response.status_code = 200
-    fake_response.json.return_value = {
-        "choices": [{"message": {"content": "\n\n12"}}]
-    }
 
     with patch(
-        "agentic_learning_portal.domains.math.qwen_judge.httpx.AsyncClient"
-    ) as mock_client_cls:
-        mock_client = mock_client_cls.return_value
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.post = AsyncMock(return_value=fake_response)
+        "agentic_learning_portal.domains.math.qwen_judge.ask_ai_for_text_response",
+        new_callable=AsyncMock,
+        return_value="12",
+    ) as mock_run:
         answer = await judge._query_groq("What is 3 times 4?")
 
     assert answer == "12"
-    mock_client.post.assert_awaited_once_with(
-        GROQ_CHAT_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        "You are a math solver. Read the following math problem and output ONLY "
-                        "the final numeric answer. Do not include reasoning, explanations, or "
-                        "step-by-step solutions. Output just the answer as a single number or "
-                        "expression.\n\nProblem: What is 3 times 4?"
-                    ),
-                }
-            ],
-            "temperature": 0,
-            "max_tokens": 512,
-        },
-        headers={"Authorization": "Bearer test-key"},
+    mock_run.assert_awaited_once_with(
+        url=GROQ_CHAT_URL,
+        api_key="test-key",
+        model=MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"{SOLVER_SYSTEM_PROMPT}\n\nProblem: What is 3 times 4?"
+                ),
+            }
+        ],
+        timeout=60.0,
+        max_tokens=512,
     )
 
 
 @pytest.mark.asyncio
 async def test_query_groq_returns_none_on_rate_limit() -> None:
     judge = QwenMathJudge(api_key="test-key")
-    fake_response = MagicMock()
-    fake_response.status_code = 429
 
     with patch(
-        "agentic_learning_portal.domains.math.qwen_judge.httpx.AsyncClient"
-    ) as mock_client_cls:
-        mock_client = mock_client_cls.return_value
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.post = AsyncMock(return_value=fake_response)
+        "agentic_learning_portal.domains.math.qwen_judge.ask_ai_for_text_response",
+        new_callable=AsyncMock,
+        side_effect=LLMUnavailableError("rate limited"),
+    ):
         answer = await judge._query_groq("What is 3 times 4?")
 
     assert answer is None
@@ -225,16 +213,12 @@ async def test_query_groq_returns_none_on_rate_limit() -> None:
 @pytest.mark.asyncio
 async def test_query_groq_returns_none_on_malformed_response() -> None:
     judge = QwenMathJudge(api_key="test-key")
-    fake_response = MagicMock()
-    fake_response.status_code = 200
-    fake_response.json.return_value = {"unexpected": "shape"}
 
     with patch(
-        "agentic_learning_portal.domains.math.qwen_judge.httpx.AsyncClient"
-    ) as mock_client_cls:
-        mock_client = mock_client_cls.return_value
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.post = AsyncMock(return_value=fake_response)
+        "agentic_learning_portal.domains.math.qwen_judge.ask_ai_for_text_response",
+        new_callable=AsyncMock,
+        side_effect=LLMResponseError("unexpected shape"),
+    ):
         answer = await judge._query_groq("What is 3 times 4?")
 
     assert answer is None

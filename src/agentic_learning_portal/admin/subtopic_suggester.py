@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+
+from agentic_learning_portal.api.llm import ask_ai_for_structured_response
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +43,13 @@ async def suggest_subtopics(
         return []
 
     try:
-        agent = Agent(
+        result = await ask_ai_for_structured_response(
             model=model,
             output_type=SubtopicSuggestions,
             system_prompt=SUGGESTOR_SYSTEM_PROMPT,
+            user_prompt=f"Suggest subtopics for the math topic: {topic}",
         )
-        response = await agent.run(f"Suggest subtopics for the math topic: {topic}")
-        raw = (
-            response.output.subtopics
-            if isinstance(response.output, SubtopicSuggestions)
-            else []
-        )
+        raw = result.subtopics if isinstance(result, SubtopicSuggestions) else []
     except Exception as e:  # noqa: BLE001 - suggestion is best-effort
         logger.warning("Could not suggest subtopics for topic %r: %s", topic, e)
         return []

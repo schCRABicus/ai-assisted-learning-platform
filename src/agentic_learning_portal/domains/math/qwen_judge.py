@@ -6,8 +6,7 @@ import logging
 import os
 import re
 
-import httpx
-
+from agentic_learning_portal.api.llm import LLMError, ask_ai_for_text_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
 from agentic_learning_portal.domains.math._comparison import _answers_match, _to_number
 
@@ -102,9 +101,11 @@ class QwenMathJudge(Judge):
         """Ask Qwen via Groq's chat API and return the assistant's message.
 
         Returns ``None`` when the model could not answer — a rate limit
-        (HTTP 429) or any other error/transport failure — so the caller can
-        treat the task as unverifiable rather than crash the generation
-        pipeline. Split out so tests can mock it without a network call.
+        (HTTP 429), a server/transport failure, or a malformed reply — so the
+        caller can treat the task as unverifiable rather than crash the
+        generation pipeline. The HTTP call itself runs through
+        ``ask_ai_for_text_response``, which retries transient failures with backoff
+        before giving up. Split out so tests can mock it without a network call.
         """
         if not self._api_key:
             raise RuntimeError(
@@ -112,35 +113,23 @@ class QwenMathJudge(Judge):
                 "to QwenMathJudge()."
             )
 
-        payload = {
-            "model": self._model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"{SOLVER_SYSTEM_PROMPT}\n\nProblem: {task_text}",
-                }
-            ],
-            "temperature": 0,
-            "max_tokens": self._max_tokens,
-        }
-
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                GROQ_CHAT_URL,
-                json=payload,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
-        if response.status_code == 429:
-            logger.warning("Groq rate limit hit")
-            return None
-        response.raise_for_status()
-
-        data = response.json()
         try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
+            return await ask_ai_for_text_response(
+                url=GROQ_CHAT_URL,
+                api_key=self._api_key,
+                model=self._model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{SOLVER_SYSTEM_PROMPT}\n\nProblem: {task_text}",
+                    }
+                ],
+                timeout=self._timeout,
+                max_tokens=self._max_tokens,
+            )
+        except LLMError as e:
+            logger.warning("Groq chat completion failed: %s", e)
             return None
-        return content.strip() if content else None
 
     def _extract_answer(self, response_text: str) -> str:
         """Extract a single numeric answer from Qwen's reply.

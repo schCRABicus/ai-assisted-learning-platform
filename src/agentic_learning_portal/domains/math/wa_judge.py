@@ -7,8 +7,8 @@ import os
 
 import httpx
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
 
+from agentic_learning_portal.api.llm import ask_ai_for_structured_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
 from agentic_learning_portal.domains.math._comparison import _answers_match
 
@@ -126,13 +126,13 @@ class WolframAlphaJudge(Judge):
         unverifiable rather than crash the generation pipeline.
         """
         try:
-            agent = Agent(
+            result = await ask_ai_for_structured_response(
                 model=self._model,
                 output_type=MathQuery,
                 system_prompt=TRANSLATOR_SYSTEM_PROMPT,
+                user_prompt=text,
             )
-            response = await agent.run(text)
-            query = response.output.query if isinstance(response.output, MathQuery) else ""
+            query = result.query if isinstance(result, MathQuery) else ""
             return query.strip()
         except Exception as e:  # noqa: BLE001 - translation is best-effort
             logger.warning("Could not translate problem into a query: %s", e)

@@ -58,7 +58,7 @@ if "generation_status" not in st.session_state:
 # --- topic + dynamically suggested subtopics --------------------------------
 
 topic = st.text_input(
-    "Topic",
+    "📚 Topic",
     placeholder="e.g. Arithmetic, Algebra, Geometry",
     help="The math topic to generate a task for.",
 )
@@ -67,7 +67,7 @@ topic = st.text_input(
 # ``suggested_for`` records the topic the current suggestions were generated
 # for, so a rerun caused by any other widget does not fire the LLM call again.
 if topic.strip() and topic.strip().lower() != st.session_state["suggested_for"].lower():
-    with st.spinner("Suggesting subtopics..."):
+    with st.spinner("🔍 Suggesting subtopics..."):
         suggestions = _run_suggest_subtopics(topic, DEFAULT_MODEL)
     if suggestions:
         _reset_suggestion_state(suggestions, topic.strip())
@@ -81,13 +81,13 @@ if topic.strip() and topic.strip().lower() != st.session_state["suggested_for"].
 
 suggested = st.session_state["suggested_subtopics"]
 selected_subtopics = st.multiselect(
-    "Subtopics",
+    "🧩 Subtopics",
     options=suggested,
     key="selected_subtopics",
     help="LLM-suggested subtopics; select the ones to focus on.",
 )
 manual = st.text_input(
-    "Add your own subtopics (comma-separated)",
+    "✍️ Add your own subtopics (comma-separated)",
     placeholder="e.g. fractions, word problems",
 )
 manual_subtopics = [s.strip() for s in manual.split(",") if s.strip()]
@@ -96,25 +96,25 @@ subtopics = list(selected_subtopics) + [
 ]
 
 if not suggested:
-    st.caption("Enter a topic to get LLM-suggested subtopics.")
+    st.caption("💡 Enter a topic to get LLM-suggested subtopics.")
 
 # --- other parameters ---------------------------------------------------------
 
 context = st.text_input(
-    "Context",
+    "🎭 Context",
     value=DEFAULT_CONTEXT,
     help="Thematic setting for the problem (e.g. Lego, Plants vs Zombies).",
 )
 
 col_grade, col_complexity = st.columns(2)
 grade = col_grade.selectbox(
-    "Grade",
+    "🎓 Grade",
     options=list(range(1, 12)),
     index=4,
     help="Student grade level (1-11).",
 )
 complexity = col_complexity.selectbox(
-    "Complexity",
+    "📊 Complexity",
     options=["easy", "medium", "hard"],
     index=0,
 )
@@ -123,6 +123,7 @@ complexity = col_complexity.selectbox(
 
 generate_clicked = st.button(
     "Generate task",
+    icon="✨",
     type="primary",
     disabled=st.session_state["generating"] or not (topic.strip() and subtopics),
 )
@@ -143,7 +144,7 @@ if generate_clicked:
 if st.session_state["generating"] and st.session_state["pending_prompt"] is not None:
     prompt_input = st.session_state.pop("pending_prompt")
     try:
-        with st.spinner("Generating the task..."):
+        with st.spinner("⏳ Generating the task..."):
             task = asyncio.run(MathProblemGenerator().generate(prompt_input))
     except RuntimeError as e:
         st.session_state["generation_status"] = (
@@ -179,13 +180,13 @@ if task is not None:
     st.subheader("Generated task")
 
     meta = st.columns(4)
-    meta[0].markdown(f"**Topic:** {task.topic}")
-    meta[1].markdown(f"**Grade:** {prompt_input.grade}")
-    meta[2].markdown(f"**Complexity:** {task.complexity}")
-    meta[3].markdown(f"**Subtopics:** {', '.join(prompt_input.subtopics)}")
+    meta[0].markdown(f"**📚 Topic:** {task.topic}")
+    meta[1].markdown(f"**🎓 Grade:** {prompt_input.grade}")
+    meta[2].markdown(f"**📊 Complexity:** {task.complexity}")
+    meta[3].markdown(f"**🧩 Subtopics:** {', '.join(prompt_input.subtopics)}")
 
     st.markdown("---")
-    st.markdown(f"**Problem**\n\n{task.text}")
-    st.markdown(f"**Correct answer:** `{task.correct_answer}`")
-    with st.expander("Solution", expanded=False):
+    st.markdown(f"**📝 Problem**\n\n{task.text}")
+    st.markdown(f"**✅ Correct answer:** `{task.correct_answer}`")
+    with st.expander("💡 Solution", expanded=False):
         st.markdown(task.solution)
