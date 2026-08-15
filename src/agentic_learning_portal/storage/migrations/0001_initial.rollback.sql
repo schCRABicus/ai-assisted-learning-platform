@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS attempt_results;
+DROP TABLE IF EXISTS attempts;
+DROP TABLE IF EXISTS assignment_tasks;
+DROP TABLE IF EXISTS assignments;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS roles;

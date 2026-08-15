@@ -10,10 +10,11 @@ Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
 - Run all tests: `uv run pytest`
 - Run a single test: `uv run pytest tests/domains/math/test_math_generator.py::test_build_user_prompt_includes_subtopics`
 - Run the demo CLI: `uv run run-app` — needs a `GOOGLE_API_KEY` in `.env` (`echo 'GOOGLE_API_KEY=your-key-here' > .env`). The demo also verifies with a judge ensemble: Wolfram|Alpha (needs `WOLFRAM_APP_ID` and `GROQ_API_KEY` — the judge's translation runs on `groq:llama-3.3-70b-versatile`; without a Groq key the judge falls back to the Gemini model) and Qwen (needs `GROQ_API_KEY` — `qwen/qwen3.6-27b`, served by Groq). Judges are skipped individually when their key is missing; without any judge keys the demo falls back to plain generation.
+- Storage bootstraps from `.env` when the portal (or a script) calls `load_dotenv()`: if `ADMIN_USERNAME` and `ADMIN_PASSWORD` are both set, `SqliteStorage` seeds an admin (roles `admin` + `teacher`) on construction — idempotent, and the password is stored as a salted scrypt hash, never plaintext. `verify_credentials(username, password)` is the login check. The portal's DB is file-backed at `PORTAL_DB_PATH` (default `portal.db` in the working dir, git-ignored); `auth.get_storage()` constructs one `SqliteStorage` per thread (see *Authentication & authorization* below).
 
 `pytest` runs in `asyncio_mode = "auto"` (configured in `pyproject.toml`), so async tests need no `@pytest.mark.asyncio`.
 
-- Run the portal: `uv run run-portal` (or `uv run streamlit run src/agentic_learning_portal/app.py`) — a single Streamlit app exposing each page as an endpoint via `st.navigation`: the admin page at `/admin` (task generation) and a student placeholder at `/student`. Needs a `GOOGLE_API_KEY` in `.env` for the subtopic-suggestion call and for generation.
+- Run the portal: `uv run run-portal` (or `uv run streamlit run src/agentic_learning_portal/app.py`) — a single Streamlit app exposing each page as an endpoint via `st.navigation`: the admin page at `/admin` (task generation) and a student placeholder at `/student`. Needs a `GOOGLE_API_KEY` in `.env` for the subtopic-suggestion call and for generation. Both endpoints are auth-gated (see *Authentication & authorization*); set `ADMIN_USERNAME`/`ADMIN_PASSWORD` in `.env` for the initial admin account.
 
 ## Architecture
 
@@ -70,6 +71,32 @@ The package is split into a generic **api layer** and domain-specific **domains*
   `google:gemini-3.5-flash`) that returns trimmed, de-duplicated subtopic
   suggestions for a topic, or `[]` on any failure so the UI degrades
   gracefully. Tested in `tests/admin/`.
+
+### Authentication & authorization (local login/password)
+
+Both endpoints are gated by `auth.py` via `require_roles(...)`, called at the
+top of each page before any widget: `/admin` requires the `admin` or `teacher`
+role, `/student` requires any authenticated user. An unauthenticated visitor gets
+an inline login form (`auth.render_login_form`) and `st.stop()` — so no LLM call
+fires before sign-in; a signed-in user lacking a required role gets an
+access-denied message. `app.py` renders a "signed in as" badge + Log out in the
+sidebar (`auth.render_sidebar_user`).
+
+Identity lives in `st.session_state["user"]` and is checked against
+`SqliteStorage` via `verify_credentials` (salted scrypt hashes, never
+plaintext). The `.env`-seeded admin (roles `admin` + `teacher`) is the first
+account. `auth.get_storage()` keeps one `SqliteStorage` per thread (the class
+forbids cross-thread use) all pointing at the same `PORTAL_DB_PATH` file.
+
+Auth is **local username/password by design, not OIDC**: hashing, roles, and the
+admin seed already exist, and there is no identity provider to integrate in a
+single-process Streamlit sandbox. OIDC would only pay off with an existing IdP
+(SSO, managed MFA/password policy, external users); the page guards are role-only,
+so swapping in OIDC later means replacing `auth.login` / `verify_credentials`
+without touching any page. User provisioning beyond the seeded admin isn't
+implemented yet (storage's `create_user`/`list_users` already exist for it). The
+guards are exercised in `tests/portal/test_auth.py` (AppTest) and
+`tests/admin/test_admin_page.py` logs in through the form.
 
 ### The generation flow
 

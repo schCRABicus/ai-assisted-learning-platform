@@ -15,11 +15,16 @@ import streamlit as st
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.admin.subtopic_suggester import suggest_subtopics
 from agentic_learning_portal.api.progress import CollectingProgressListener
+from agentic_learning_portal.auth import require_roles
 from agentic_learning_portal.domains.math import (
     MathProblemGenerationPromptInput,
     MathProblemGenerator,
     build_judge_ensemble,
 )
+
+# Gate the page before any widget (the topic input below fires an LLM call for
+# subtopic suggestions, so it must never run for unauthenticated visitors).
+require_roles("admin", "teacher")
 
 st.title("🎓 Task Generation Admin")
 

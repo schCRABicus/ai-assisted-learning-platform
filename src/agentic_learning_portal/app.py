@@ -12,6 +12,8 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
+from agentic_learning_portal.auth import render_sidebar_user
+
 # Load API keys (e.g. GOOGLE_API_KEY) from .env before any page runs.
 load_dotenv()
 
@@ -32,6 +34,10 @@ student = st.Page(
     icon="🧑‍🎓",
     url_path="student",
 )
+
+# Show the signed-in user + Log out in the sidebar on every page. Pages guard
+# themselves (see ``auth.require_roles``), so this is cosmetic, not a gate.
+render_sidebar_user()
 
 pg = st.navigation([admin, student])
 pg.run()

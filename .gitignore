@@ -8,5 +8,8 @@ wheels/
 .env
 .idea
 
+# Local portal database (default PORTAL_DB_PATH)
+*.db
+
 # Virtual environments
 .venv
