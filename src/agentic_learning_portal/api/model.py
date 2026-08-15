@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agentic_learning_portal.api.progress import ProgressListener
+
 
 class ProblemGenerationPromptInput(BaseModel, ABC):
     """Input parameters for problem generation prompt."""
@@ -75,5 +77,15 @@ class Judge(ABC):
     """
 
     @abstractmethod
-    async def verify(self, task: GeneratedTask) -> VerificationResult:
-        """Return the judge's verdict on ``task``."""
+    async def verify(
+        self,
+        task: GeneratedTask,
+        *,
+        listener: ProgressListener | None = None,
+    ) -> VerificationResult:
+        """Return the judge's verdict on ``task``.
+
+        ``listener`` is optional: when provided, the judge reports its progress
+        steps (translation, computation, verdict) so callers can surface live
+        generation progress. Ignore it if the judge has no discrete steps.
+        """

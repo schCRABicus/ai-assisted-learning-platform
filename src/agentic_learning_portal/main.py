@@ -1,14 +1,12 @@
 import asyncio
 import logging
-import os
 
 from dotenv import load_dotenv
 
 from .domains.math import (
     MathProblemGenerationPromptInput,
     MathProblemGenerator,
-    QwenMathJudge,
-    WolframAlphaJudge,
+    build_judge_ensemble,
 )
 
 logging.basicConfig(
@@ -30,26 +28,14 @@ async def generate_math_problem():
     )
 
     print(f"Asking LLM to generate a math problem for grade {input.grade} student with {' and '.join(subtopics)}...")
-    judges: list = []
-    if os.environ.get("WOLFRAM_APP_ID"):
-        if os.environ.get("GROQ_API_KEY"):
-            # Default judge model (groq:llama-3.3-70b-versatile) is independent of
-            # the Gemini generator.
-            judges.append(WolframAlphaJudge())
-        else:
-            print(
-                "GROQ_API_KEY not set — using Gemini for the judge's "
-                "translation pass (less independent than the default Groq judge)."
-            )
-            judges.append(WolframAlphaJudge(model="google:gemini-3.5-flash"))
-    else:
-        print("WOLFRAM_APP_ID not set — skipping Wolfram|Alpha verification.")
-    if os.environ.get("GROQ_API_KEY"):
-        judges.append(QwenMathJudge())
-    else:
-        print("GROQ_API_KEY not set — skipping Qwen verification.")
 
-    # A list means the task must be verified by every judge (judge-ensemble consensus).
+    # A list means the task must be verified by every judge (judge-ensemble
+    # consensus); empty means no judge keys are set and generation is plain.
+    judges = build_judge_ensemble()
+    if judges:
+        print("Verifying with judge ensemble: " + ", ".join(j.__class__.__name__ for j in judges))
+    else:
+        print("No judge keys set — skipping verification (plain generation).")
     judge = judges if judges else None
 
     task = await MathProblemGenerator().generate(

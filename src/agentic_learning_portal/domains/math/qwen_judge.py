@@ -8,6 +8,7 @@ import re
 
 from agentic_learning_portal.api.llm import LLMError, ask_ai_for_text_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
+from agentic_learning_portal.api.progress import ProgressListener, report_progress
 from agentic_learning_portal.domains.math._comparison import _answers_match, _to_number
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,21 @@ class QwenMathJudge(Judge):
         self._timeout = timeout
         self._max_tokens = max_tokens
 
-    async def verify(self, task: GeneratedTask) -> VerificationResult:
+    async def verify(
+        self,
+        task: GeneratedTask,
+        *,
+        listener: ProgressListener | None = None,
+    ) -> VerificationResult:
         logger.info("Verifying task with Qwen judge...")
+        await report_progress(listener, "verify", "Qwen: solving the problem...")
         response_text = await self._query_groq(task.text)
         if not response_text:
+            await report_progress(
+                listener,
+                "verify",
+                "Qwen: could not produce an answer.",
+            )
             return VerificationResult(
                 judge="qwen",
                 verified=False,
@@ -71,6 +83,13 @@ class QwenMathJudge(Judge):
 
         answer = self._extract_answer(response_text)
         verified = bool(answer) and _answers_match(task.correct_answer, answer)
+        await report_progress(
+            listener,
+            "verify",
+            "Qwen: "
+            + ("verified" if verified else "could not verify")
+            + " the answer.",
+        )
 
         logger.info(
             "Qwen verdict: verified=%s (expected=%r, answer=%r)",

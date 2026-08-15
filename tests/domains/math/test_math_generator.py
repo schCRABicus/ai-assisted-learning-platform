@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from agentic_learning_portal.api.generator import DEFAULT_SYSTEM_PROMPT, Generator
 from agentic_learning_portal.api.model import GeneratedTask, VerificationResult
+from agentic_learning_portal.api.progress import CollectingProgressListener, ProgressEvent
 from agentic_learning_portal.domains.math.generator import MathProblemGenerator
 from agentic_learning_portal.domains.math.wa_judge import WolframAlphaJudge
 from agentic_learning_portal.domains.math.model import MathProblemGenerationPromptInput
@@ -551,3 +552,125 @@ def test_create_verification_retry_prompt_combines_multiple_judges() -> None:
     assert "could not confirm" in retry_prompt
     assert "could not compute" in retry_prompt
     assert "15" not in retry_prompt
+
+
+# --- progress listener --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_emits_progress_events_without_judge(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    log: list[ProgressEvent] = []
+    with patch.object(
+        Generator,
+        "_call_llm",
+        new_callable=AsyncMock,
+        return_value=VALID_MATH_PROBLEM,
+    ):
+        await generator.generate(prompt_input, listener=CollectingProgressListener(log))
+
+    stages = [e.stage for e in log]
+    assert "generate" in stages
+    assert "validate" in stages
+    assert stages[-1] == "done"
+    generate_event = next(e for e in log if e.stage == "generate")
+    assert generate_event.attempt == 1
+    assert generate_event.total == 5
+
+
+@pytest.mark.asyncio
+async def test_generate_emits_verify_retry_and_done_with_judge(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    log: list[ProgressEvent] = []
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ),
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            side_effect=[_verification_result(False), _verification_result(True)],
+        ),
+    ):
+        result = await generator.generate(
+            prompt_input, judge=judge, listener=CollectingProgressListener(log)
+        )
+
+    assert result == GeneratedTask.model_validate(VALID_MATH_PROBLEM)
+    stages = [e.stage for e in log]
+    assert "verify" in stages
+    assert "retry" in stages
+    assert stages[-1] == "done"
+
+
+@pytest.mark.asyncio
+async def test_generate_passes_listener_to_judges(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    log: list[ProgressEvent] = []
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ),
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            return_value=_verification_result(True),
+        ) as mock_verify,
+    ):
+        await generator.generate(
+            prompt_input, judge=judge, listener=CollectingProgressListener(log)
+        )
+
+    mock_verify.assert_awaited_once()
+    assert isinstance(
+        mock_verify.await_args.kwargs["listener"],
+        CollectingProgressListener,
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_emits_error_stage_on_exhaustion(
+    generator: MathProblemGenerator,
+    prompt_input: MathProblemGenerationPromptInput,
+) -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    log: list[ProgressEvent] = []
+    with (
+        patch.object(
+            Generator,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value=VALID_MATH_PROBLEM,
+        ),
+        patch.object(
+            judge,
+            "verify",
+            new_callable=AsyncMock,
+            return_value=_verification_result(False),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="Max retries reached"):
+            await generator.generate(
+                prompt_input,
+                judge=judge,
+                retries=2,
+                listener=CollectingProgressListener(log),
+            )
+
+    assert log[-1].stage == "error"

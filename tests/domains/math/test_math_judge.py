@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentic_learning_portal.api.model import GeneratedTask
+from agentic_learning_portal.api.progress import CollectingProgressListener, ProgressEvent
 from agentic_learning_portal.domains.math._comparison import (
     _answers_match,
     _normalize,
@@ -315,4 +316,50 @@ async def test_translate_to_query_retries_when_first_call_fails() -> None:
         query = await judge._translate_to_query("What is 3 times 4?", retries=3)
 
     assert query == "3*4"
+
+
+# --- progress reporting -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_progress_events() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    with (
+        patch.object(
+            judge,
+            "_translate_to_query",
+            new_callable=AsyncMock,
+            return_value="3*4",
+        ),
+        patch.object(
+            judge,
+            "_query_wolfram",
+            new_callable=AsyncMock,
+            return_value="12",
+        ),
+    ):
+        log: list[ProgressEvent] = []
+        result = await judge.verify(_task(12), listener=CollectingProgressListener(log))
+
+    assert result.verified is True
+    messages = [e.message for e in log]
+    assert any("translating" in m for m in messages)
+    assert any("computing" in m for m in messages)
+    assert any("verified" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_translation_failure() -> None:
+    judge = WolframAlphaJudge(app_id="test-app-id")
+    with patch.object(
+        judge,
+        "_translate_to_query",
+        new_callable=AsyncMock,
+        return_value="",
+    ):
+        log: list[ProgressEvent] = []
+        await judge.verify(_task(12), listener=CollectingProgressListener(log))
+
+    messages = [e.message for e in log]
+    assert any("could not translate" in m for m in messages)
 

@@ -7,20 +7,69 @@ Run the whole portal with ``uv run run-portal``; this page is served at
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import streamlit as st
 
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.admin.subtopic_suggester import suggest_subtopics
+from agentic_learning_portal.api.progress import CollectingProgressListener
 from agentic_learning_portal.domains.math import (
     MathProblemGenerationPromptInput,
     MathProblemGenerator,
+    build_judge_ensemble,
 )
 
 st.title("🎓 Task Generation Admin")
 
 DEFAULT_CONTEXT = "Everyday life"
 DEFAULT_MODEL = "google:gemini-3.5-flash"
+POLL_INTERVAL_S = 0.25
+
+# Icon per progress stage, shown in the live status panel while a task is generated.
+_EVENT_ICONS = {
+    "generate": "📝",
+    "validate": "✅",
+    "verify": "🔎",
+    "retry": "🔁",
+    "done": "🎉",
+    "error": "❌",
+}
+
+
+def _event_icon(stage: str) -> str:
+    return _EVENT_ICONS.get(stage, "•")
+
+
+def _run_generation_in_thread(
+    prompt_input: MathProblemGenerationPromptInput,
+    gen_state: dict,
+) -> None:
+    """Generate a task in a daemon thread, writing progress + outcome to ``gen_state``.
+
+    ``gen_state`` is a plain dict shared with the main script: the worker
+    appends ``ProgressEvent`` objects to ``gen_state["log"]`` and stores the
+    finished ``GeneratedTask`` in ``gen_state["result"]`` (or an error string in
+    ``gen_state["error"]``). The main script polls it on every rerun and renders
+    the accumulated log. Nothing here touches ``st.session_state``.
+    """
+    listener = CollectingProgressListener(gen_state["log"])
+
+    async def _run() -> None:
+        try:
+            task = await MathProblemGenerator().generate(
+                prompt_input,
+                judge=build_judge_ensemble() or None,
+                listener=listener,
+            )
+            gen_state["result"] = task
+        except RuntimeError as e:
+            gen_state["error"] = str(e)
+        except Exception as e:  # noqa: BLE001 - surface any failure in the UI
+            gen_state["error"] = f"{type(e).__name__}: {e}"
+
+    asyncio.run(_run())
 
 
 def _run_suggest_subtopics(topic: str, model: str) -> list[str]:
@@ -28,10 +77,14 @@ def _run_suggest_subtopics(topic: str, model: str) -> list[str]:
 
 
 def _reset_suggestion_state(subtopics: list[str], topic: str) -> None:
-    """Store the current suggestion set and select all of it by default."""
+    """Store the current suggestion set, leaving the selection empty.
+
+    The suggestions populate the multiselect's options but nothing is
+    pre-selected, so the admin chooses the subtopics to focus on.
+    """
     st.session_state["suggested_subtopics"] = list(subtopics)
     st.session_state["suggested_for"] = topic
-    st.session_state["selected_subtopics"] = list(subtopics)
+    st.session_state["selected_subtopics"] = []
 
 
 # --- persistent state ---------------------------------------------------------
@@ -45,14 +98,14 @@ if "last_task" not in st.session_state:
     st.session_state["last_task"] = None
 if "last_prompt" not in st.session_state:
     st.session_state["last_prompt"] = None
-# Generation is split across reruns so the button can stay disabled for the
-# whole duration of the (blocking) LLM call. ``generating`` is the in-flight
-# flag, ``pending_prompt`` carries the frozen inputs across the rerun, and
-# ``generation_status`` carries a one-shot success/error message back.
+# Generation runs in a background thread so the page can show live progress.
+# ``generating`` is the in-flight flag, ``gen_state`` is a plain dict shared
+# with the worker thread (log events + final outcome), and ``generation_status``
+# carries a one-shot success/error message back.
 if "generating" not in st.session_state:
     st.session_state["generating"] = False
-if "pending_prompt" not in st.session_state:
-    st.session_state["pending_prompt"] = None
+if "gen_state" not in st.session_state:
+    st.session_state["gen_state"] = None
 if "generation_status" not in st.session_state:
     st.session_state["generation_status"] = None
 
@@ -98,6 +151,8 @@ subtopics = list(selected_subtopics) + [
 
 if not suggested:
     st.caption("💡 Enter a topic to get LLM-suggested subtopics.")
+elif not selected_subtopics:
+    st.caption("💡 Select the subtopics to focus on (or add your own below).")
 
 # --- other parameters ---------------------------------------------------------
 
@@ -130,37 +185,66 @@ generate_clicked = st.button(
 )
 
 if generate_clicked:
-    # Freeze the inputs and mark generation as in-flight, then rerun so the
-    # button renders disabled for the whole blocking call below.
-    st.session_state["generating"] = True
-    st.session_state["pending_prompt"] = MathProblemGenerationPromptInput(
+    # Freeze the inputs, clear the previous result, and start generation in a
+    # background thread; then rerun so the button renders disabled while the
+    # live progress panel below streams the worker's events in one run.
+    prompt_input = MathProblemGenerationPromptInput(
         topic=topic.strip(),
         subtopics=subtopics,
         context=context.strip() or DEFAULT_CONTEXT,
         complexity=complexity,
         grade=grade,
     )
+    st.session_state["last_task"] = None
+    st.session_state["last_prompt"] = prompt_input
+    st.session_state["gen_state"] = {"log": [], "result": None, "error": None}
+    st.session_state["generating"] = True
+    threading.Thread(
+        target=_run_generation_in_thread,
+        args=(prompt_input, st.session_state["gen_state"]),
+        daemon=True,
+    ).start()
     st.rerun()
 
-if st.session_state["generating"] and st.session_state["pending_prompt"] is not None:
-    prompt_input = st.session_state.pop("pending_prompt")
-    try:
-        with st.spinner("⏳ Generating the task..."):
-            task = asyncio.run(MathProblemGenerator().generate(prompt_input))
-    except RuntimeError as e:
+if st.session_state["generating"]:
+    gen_state = st.session_state["gen_state"]
+    status = st.status("✨ Generating the task...", expanded=True)
+
+    # Live progress in a single script run: append each new progress line once
+    # and never re-render previous ones. Streamlit streams these deltas to the
+    # browser as they're created, so the panel grows in place while the rest of
+    # the page stays untouched — no per-poll full rerun, no jumping. The worker
+    # thread appends to ``gen_state["log"]``; this loop drains the tail until
+    # the run finishes (the worker writes the result only after all events).
+    last_rendered = 0
+    while gen_state["result"] is None and gen_state["error"] is None:
+        log = gen_state["log"]
+        new_events = log[last_rendered:]
+        if new_events:
+            for event in new_events:
+                st.markdown(f"{_event_icon(event.stage)} {event.message}")
+            last_rendered = len(log)
+        time.sleep(POLL_INTERVAL_S)
+
+    # Drain anything appended since the last pass, then fold the outcome in.
+    for event in gen_state["log"][last_rendered:]:
+        st.markdown(f"{_event_icon(event.stage)} {event.message}")
+
+    if gen_state["error"] is not None:
+        status.update(label="❌ Task generation failed", state="error")
         st.session_state["generation_status"] = (
             "error",
-            f"Could not generate a validated task: {e}",
+            f"Could not generate a validated task: {gen_state['error']}",
         )
     else:
-        st.session_state["last_task"] = task
-        st.session_state["last_prompt"] = prompt_input
+        status.update(label="✅ Task generated and verified", state="complete")
+        st.session_state["last_task"] = gen_state["result"]
         st.session_state["generation_status"] = (
             "success",
             "Task generated and schema-validated.",
         )
     st.session_state["generating"] = False
-    # Rerun to re-enable the button and render the one-shot status + result.
+    # One final rerun to re-enable the button and render status + result.
     st.rerun()
 
 status = st.session_state.pop("generation_status", None)
@@ -170,6 +254,14 @@ if status is not None:
         st.success(message)
     else:
         st.error(message)
+
+# After a run finishes, keep the step history visible (collapsed) so the admin
+# can review exactly what the pipeline did.
+if st.session_state["gen_state"] is not None and not st.session_state["generating"]:
+    last_log = st.session_state["gen_state"]["log"]
+    with st.expander(f"📜 Generation steps ({len(last_log)})", expanded=False):
+        for event in last_log:
+            st.markdown(f"{_event_icon(event.stage)} {event.message}")
 
 # --- result -------------------------------------------------------------------
 

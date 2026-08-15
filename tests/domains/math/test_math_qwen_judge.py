@@ -6,6 +6,7 @@ import pytest
 
 from agentic_learning_portal.api.llm import LLMResponseError, LLMUnavailableError
 from agentic_learning_portal.api.model import GeneratedTask
+from agentic_learning_portal.api.progress import CollectingProgressListener, ProgressEvent
 from agentic_learning_portal.domains.math.qwen_judge import (
     GROQ_CHAT_URL,
     QwenMathJudge,
@@ -222,3 +223,40 @@ async def test_query_groq_returns_none_on_malformed_response() -> None:
         answer = await judge._query_groq("What is 3 times 4?")
 
     assert answer is None
+
+
+# --- progress reporting -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_progress_events() -> None:
+    judge = QwenMathJudge(api_key="test-key")
+    with patch.object(
+        judge,
+        "_query_groq",
+        new_callable=AsyncMock,
+        return_value="<think>3*4=12</think>\n12",
+    ):
+        log: list[ProgressEvent] = []
+        result = await judge.verify(_task(12), listener=CollectingProgressListener(log))
+
+    assert result.verified is True
+    messages = [e.message for e in log]
+    assert any("solving" in m for m in messages)
+    assert any("verified" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_unverifiable_when_model_unavailable() -> None:
+    judge = QwenMathJudge(api_key="test-key")
+    with patch.object(
+        judge,
+        "_query_groq",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        log: list[ProgressEvent] = []
+        await judge.verify(_task(12), listener=CollectingProgressListener(log))
+
+    messages = [e.message for e in log]
+    assert any("could not produce" in m for m in messages)

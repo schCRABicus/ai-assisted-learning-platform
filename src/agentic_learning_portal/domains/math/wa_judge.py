@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from agentic_learning_portal.api.llm import ask_ai_for_structured_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
+from agentic_learning_portal.api.progress import ProgressListener, report_progress
 from agentic_learning_portal.domains.math._comparison import _answers_match
 
 logger = logging.getLogger(__name__)
@@ -58,22 +59,49 @@ class WolframAlphaJudge(Judge):
         # judge doesn't share its blind spots.
         self._model = model
 
-    async def verify(self, task: GeneratedTask) -> VerificationResult:
+    async def verify(
+        self,
+        task: GeneratedTask,
+        *,
+        listener: ProgressListener | None = None,
+    ) -> VerificationResult:
         logger.info("Verifying task...")
+        await report_progress(
+            listener,
+            "verify",
+            "Wolfram|Alpha: translating the problem into an expression...",
+        )
         query = await self._translate_to_query(task.text)
         logger.info("Task translated into query = %s", query)
         if not query:
+            await report_progress(
+                listener,
+                "verify",
+                "Wolfram|Alpha: could not translate the problem into an expression.",
+            )
             return VerificationResult(
                 judge="wolframalpha",
-            verified=False,
+                verified=False,
                 expected_answer=task.correct_answer,
                 judge_answer=None,
                 detail="Could not translate the problem into a Wolfram|Alpha query.",
             )
 
         logger.info("Querying Wolfram|Alpha with: %r", query)
+        await report_progress(
+            listener,
+            "verify",
+            "Wolfram|Alpha: computing the answer...",
+        )
         wolfram_answer = await self._query_wolfram(query)
         verified = _answers_match(task.correct_answer, wolfram_answer)
+        await report_progress(
+            listener,
+            "verify",
+            "Wolfram|Alpha: "
+            + ("verified" if verified else "could not verify")
+            + " the answer.",
+        )
 
         logger.info(
             "Wolfram|Alpha verdict: verified=%s (expected=%r, wolfram=%r)",
