@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import getpass
 import os
+import socket
 import sqlite3
 import threading
 import uuid
@@ -9,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from yoyo import get_backend, read_migrations
+from yoyo import read_migrations
 from yoyo.backends import SQLiteBackend
 from yoyo.connections import parse_uri
 
@@ -30,7 +32,31 @@ from agentic_learning_portal.storage.security import hash_password, verify_passw
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
-class _NamedMemoryBackend(SQLiteBackend):
+class _FastLogMixin:
+    """Avoid yoyo's reverse-DNS ``socket.getfqdn()`` in migration logs.
+
+    yoyo's ``DatabaseBackend.get_log_data`` records the fully-qualified
+    hostname via ``socket.getfqdn()``, which performs a reverse-DNS lookup that
+    can stall for seconds when the local hostname isn't resolvable (common on
+    dev laptops). The hostname is only migration-log metadata, so the instant
+    ``socket.gethostname()`` is enough. Mirrors yoyo's dict format from
+    ``yoyo/backends/base.py``, minus the lookup.
+    """
+
+    def get_log_data(self, migration=None, operation="apply"):
+        assert operation in {"apply", "rollback", "mark", "unmark"}
+        return {
+            "id": str(uuid.uuid1()),
+            "migration_id": migration.id if migration else None,
+            "migration_hash": migration.hash if migration else None,
+            "username": getpass.getuser(),
+            "hostname": socket.gethostname(),
+            "created_at_utc": datetime.now(timezone.utc).replace(tzinfo=None),
+            "operation": operation,
+        }
+
+
+class _NamedMemoryBackend(_FastLogMixin, SQLiteBackend):
     """yoyo SQLite backend bound to a private named shared-cache memory DB.
 
     yoyo's own ``connect()`` opens ``file::memory:?cache=shared``, which is a
@@ -65,6 +91,18 @@ class _NamedMemoryBackend(SQLiteBackend):
         # (uri, migration_table) and mis-assign the migration table to the
         # dbname; keep the same dbname instead so copies share this database.
         return _NamedMemoryBackend(self.uri, self._dbname, self.migration_table)
+
+class _FileBackend(_FastLogMixin, SQLiteBackend):
+    """File-backed SQLite backend with the fast (non-DNS) migration log.
+
+    Mirrors what ``yoyo.get_backend`` returns (parsed URI + ``init_database``),
+    so the file-backed storage behaves identically to the original.
+    """
+
+    def __init__(self, dburi, migration_table: str = "_yoyo_migration") -> None:
+        super().__init__(dburi, migration_table)
+        self.init_database()
+
 
 # Shared SELECT for users. Roles live in the many-to-many user_roles table, so
 # this flattens them into a comma-separated string via a correlated subquery;
@@ -130,7 +168,7 @@ class SqliteStorage(Storage):
                 parse_uri("sqlite:///:memory:"), f"agentic_portal_{uuid.uuid4().hex}"
             )
             if path == ":memory:"
-            else get_backend(f"sqlite:///{path}")
+            else _FileBackend(parse_uri(f"sqlite:///{path}"))
         )
         with self._lock:
             self._conn = backend.connection

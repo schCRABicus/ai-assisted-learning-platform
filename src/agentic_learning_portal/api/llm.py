@@ -10,6 +10,9 @@ handling (retry with exponential backoff + jitter) and the rate limiting
 - ``ask_ai_for_text_response`` — a raw OpenAI-compatible chat-completions HTTP call
   (used by the Qwen judge against Groq), which is not a pydantic-ai call and so
   has its own transport path.
+- ``MODELS`` — the single registry of which LLM backs each purpose (task
+  generation, subtopic suggestion, judge translation / solving); every component
+  takes its default model from here and can still be overridden per call.
 
 Both retry only *transient* failures (rate limits, server errors, transport
 errors, and pydantic-ai model-behavior hiccups) and share one conservative
@@ -95,6 +98,28 @@ class RateLimiter:
 # Coarse shared backstop: 20 calls/second. Providers have their own quotas; tune
 # this or pass a per-call ``RateLimiter`` when a call needs a different pace.
 DEFAULT_LIMITER = RateLimiter(rate=20, period=1.0)
+
+
+#: The model that backs each LLM purpose in the app, kept in one place so
+#: retuning which model does what is a one-line change. Components read their
+#: default from here by key (still overridable per instance via ``model=``).
+MODELS: dict[str, str] = {
+    # The authoring call: generates a task — problem text, correct answer, and
+    # step-by-step solution — from a prompt input. Also the Wolfram|Alpha
+    # judge's translation fallback when no Groq key is set (see
+    # ``domains.math.judges.build_judge_ensemble``).
+    "task_generation": "google:gemini-3.5-flash",
+    # Suggests candidate subtopics for a free-text topic in the admin UI.
+    "subtopic_suggestion": "google:gemini-3.5-flash",
+    # Translates a task's prose into a bare Wolfram|Alpha-computable expression
+    # (``WolframAlphaJudge``). A different provider/family than the generator so
+    # the judge doesn't share the authoring model's blind spots. Served by Groq
+    # (which now hosts gpt-oss-120b under the ``openai/`` prefix); the ``groq:``
+    # prefix is the pydantic-ai provider, the rest is Groq's model id.
+    "wolfram_translation": "groq:openai/gpt-oss-120b",
+    # Solves the task for an independent numeric answer (``QwenMathJudge``).
+    "qwen_solver": "qwen/qwen3.6-27b",
+}
 
 
 def _is_transient(exc: Exception) -> bool:

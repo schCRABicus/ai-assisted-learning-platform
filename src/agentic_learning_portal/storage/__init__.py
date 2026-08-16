@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agentic_learning_portal.storage.base import Storage
+from agentic_learning_portal.storage.memory import InMemoryStorage
 from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,
@@ -16,6 +17,7 @@ __all__ = [
     "Assignment",
     "Attempt",
     "AttemptResult",
+    "InMemoryStorage",
     "Role",
     "RoleName",
     "Storage",

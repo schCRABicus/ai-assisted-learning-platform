@@ -4,7 +4,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from agentic_learning_portal.api.llm import ask_ai_for_structured_response
+from agentic_learning_portal.api.llm import MODELS, ask_ai_for_structured_response
 from agentic_learning_portal.api.model import GeneratedTask, ProblemGenerationPromptInput
 
 InputT = TypeVar("InputT", bound=ProblemGenerationPromptInput)
@@ -23,7 +23,7 @@ DEFAULT_SYSTEM_PROMPT = (
 class Generator:
     """Async API for generating structured tasks from prompt inputs via an LLM."""
 
-    def __init__(self, model: str = "google:gemini-3.5-flash") -> None:
+    def __init__(self, model: str = MODELS["task_generation"]) -> None:
         self._model = model
 
     async def generate(

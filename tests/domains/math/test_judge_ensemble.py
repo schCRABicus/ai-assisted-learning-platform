@@ -43,5 +43,5 @@ def test_build_judge_ensemble_includes_both_with_all_keys(monkeypatch) -> None:
     assert len(judges) == 2
     assert isinstance(judges[0], WolframAlphaJudge)
     # With Groq available, the Wolfram judge uses its default Groq translator.
-    assert judges[0]._model == "groq:llama-3.3-70b-versatile"
+    assert judges[0]._model == "groq:openai/gpt-oss-120b"
     assert isinstance(judges[1], QwenMathJudge)

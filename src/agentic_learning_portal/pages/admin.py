@@ -14,6 +14,7 @@ import streamlit as st
 
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.admin.subtopic_suggester import suggest_subtopics
+from agentic_learning_portal.api.llm import MODELS
 from agentic_learning_portal.api.progress import CollectingProgressListener
 from agentic_learning_portal.auth import require_roles
 from agentic_learning_portal.domains.math import (
@@ -29,7 +30,7 @@ require_roles("admin", "teacher")
 st.title("🎓 Task Generation Admin")
 
 DEFAULT_CONTEXT = "Everyday life"
-DEFAULT_MODEL = "google:gemini-3.5-flash"
+DEFAULT_MODEL = MODELS["subtopic_suggestion"]
 POLL_INTERVAL_S = 0.25
 
 # Icon per progress stage, shown in the live status panel while a task is generated.

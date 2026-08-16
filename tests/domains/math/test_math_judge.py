@@ -283,7 +283,7 @@ async def test_translate_to_query_extracts_expression() -> None:
 
     assert query == "(7*12-28)/8"
     mock_run.assert_awaited_once_with(
-        model="groq:llama-3.3-70b-versatile",
+        model="groq:openai/gpt-oss-120b",
         output_type=MathQuery,
         system_prompt=TRANSLATOR_SYSTEM_PROMPT,
         user_prompt="Crazy Dave has 7 boxes...",

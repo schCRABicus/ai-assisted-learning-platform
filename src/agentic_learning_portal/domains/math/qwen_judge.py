@@ -6,7 +6,7 @@ import logging
 import os
 import re
 
-from agentic_learning_portal.api.llm import LLMError, ask_ai_for_text_response
+from agentic_learning_portal.api.llm import LLMError, MODELS, ask_ai_for_text_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
 from agentic_learning_portal.api.progress import ProgressListener, report_progress
 from agentic_learning_portal.domains.math._comparison import _answers_match, _to_number
@@ -31,7 +31,8 @@ SOLVER_SYSTEM_PROMPT = (
 class QwenMathJudge(Judge):
     """Judge generated tasks with a Qwen model served by Groq.
 
-    Queries ``qwen/qwen3.6-27b`` through Groq's OpenAI-compatible chat API:
+    Queries the ``qwen_solver`` model from ``api.llm.MODELS``
+    (``qwen/qwen3.6-27b``) through Groq's OpenAI-compatible chat API:
     the problem's ``text`` is sent as the user message, and the model's reply
     is mined for a single numeric answer. The model is a reasoning model — it
     wraps chain-of-thought in ``<think>...</think>`` and answers afterwards —
@@ -47,7 +48,7 @@ class QwenMathJudge(Judge):
         self,
         api_key: str | None = None,
         *,
-        model: str = "qwen/qwen3.6-27b",
+        model: str = MODELS["qwen_solver"],
         timeout: float = 60.0,
         max_tokens: int = 512,
     ) -> None:

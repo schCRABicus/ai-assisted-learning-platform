@@ -8,7 +8,7 @@ import os
 import httpx
 from pydantic import BaseModel, Field
 
-from agentic_learning_portal.api.llm import ask_ai_for_structured_response
+from agentic_learning_portal.api.llm import MODELS, ask_ai_for_structured_response
 from agentic_learning_portal.api.model import GeneratedTask, Judge, VerificationResult
 from agentic_learning_portal.api.progress import ProgressListener, report_progress
 from agentic_learning_portal.domains.math._comparison import _answers_match
@@ -39,10 +39,11 @@ class WolframAlphaJudge(Judge):
 
     Wolfram|Alpha can't parse themed narrative, so the task's ``text`` is first
     translated into a bare arithmetic expression by a small LLM call. The
-    translation uses the judge's own ``model``, which defaults to
-    ``groq:llama-3.3-70b-versatile`` — a different model family on a different
-    provider than the Gemini task generator, so the judge does not share the
-    authoring LLM's systematic blind spots. Override via ``model``.
+    translation uses the judge's own ``model``, which defaults to the
+    ``wolfram_translation`` entry in ``api.llm.MODELS`` — a different model
+    family on a different provider than the Gemini task generator, so the
+    judge does not share the authoring LLM's systematic blind spots. Override
+    via ``model``.
     """
 
     def __init__(
@@ -50,12 +51,12 @@ class WolframAlphaJudge(Judge):
         app_id: str | None = None,
         *,
         timeout: float = 30.0,
-        model: str = "groq:llama-3.3-70b-versatile",
+        model: str = MODELS["wolfram_translation"],
     ) -> None:
         self._app_id = app_id if app_id is not None else os.environ.get("WOLFRAM_APP_ID", "")
         self._timeout = timeout
         # The judge's own LLM, used for translation. Defaults to a Groq-hosted
-        # Llama-3.3 model — independent of the Gemini task generator — so the
+        # gpt-oss-120b — independent of the Gemini task generator — so the
         # judge doesn't share its blind spots.
         self._model = model
 

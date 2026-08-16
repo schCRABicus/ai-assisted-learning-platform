@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from agentic_learning_portal.api.llm import MODELS
 from agentic_learning_portal.api.model import Judge
 from agentic_learning_portal.domains.math.qwen_judge import QwenMathJudge
 from agentic_learning_portal.domains.math.wa_judge import WolframAlphaJudge
@@ -24,7 +25,7 @@ def build_judge_ensemble() -> list[Judge]:
         judges.append(
             WolframAlphaJudge()
             if os.environ.get("GROQ_API_KEY")
-            else WolframAlphaJudge(model="google:gemini-3.5-flash")
+            else WolframAlphaJudge(model=MODELS["task_generation"])
         )
     if os.environ.get("GROQ_API_KEY"):
         judges.append(QwenMathJudge())
