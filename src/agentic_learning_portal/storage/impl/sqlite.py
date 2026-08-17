@@ -29,7 +29,7 @@ from agentic_learning_portal.storage.models import (
 from agentic_learning_portal.storage.security import hash_password, verify_password
 
 # Where the versioned SQL migrations live (applied by yoyo on construction).
-MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 
 
 class _FastLogMixin:

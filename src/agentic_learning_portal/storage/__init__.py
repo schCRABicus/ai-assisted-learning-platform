@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agentic_learning_portal.storage.base import Storage
-from agentic_learning_portal.storage.memory import InMemoryStorage
+from agentic_learning_portal.storage.impl.memory import InMemoryStorage
 from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,
@@ -11,7 +11,7 @@ from agentic_learning_portal.storage.models import (
     Task,
     User,
 )
-from agentic_learning_portal.storage.sqlite import SqliteStorage
+from agentic_learning_portal.storage.impl.sqlite import SqliteStorage
 
 __all__ = [
     "Assignment",
