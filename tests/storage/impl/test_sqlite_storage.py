@@ -76,10 +76,10 @@ def test_role_separation_across_users() -> None:
     teacher = s.create_user("teacher1", "teacher")
     student = s.create_user("student1", "student")
 
-    assert [u.username for u in s.list_users(role="admin")] == ["boss"]
-    assert [u.username for u in s.list_users(role="teacher")] == ["teacher1"]
+    assert [u.username for u in s.list_users(role="admin")] == ["admin", "boss"]
+    assert [u.username for u in s.list_users(role="teacher")] == ["admin", "teacher1"]
     assert [u.username for u in s.list_users(role="student")] == ["student1"]
-    assert [u.username for u in s.list_users()] == ["boss", "teacher1", "student1"]
+    assert [u.username for u in s.list_users()] == ["admin", "boss", "teacher1", "student1"]
     assert admin.roles == ["admin"]
     assert teacher.roles == ["teacher"]
     assert student.roles == ["student"]
@@ -106,7 +106,7 @@ def test_create_user_unknown_role_leaves_no_partial_user() -> None:
     with pytest.raises(ValueError, match="Unknown role"):
         s.create_user("bob", ["admin", "superuser"])  # type: ignore[list-item]
 
-    assert s.list_users() == []
+    assert [u.username for u in s.list_users()] == ["admin"]
 
 
 def test_create_user_with_multiple_roles() -> None:
@@ -135,8 +135,8 @@ def test_list_users_filters_by_role_membership() -> None:
     s.create_user("student1", "student")
 
     # The multi-role user appears under both filters.
-    assert [u.username for u in s.list_users(role="admin")] == ["boss"]
-    assert [u.username for u in s.list_users(role="teacher")] == ["boss", "teacher1"]
+    assert [u.username for u in s.list_users(role="admin")] == ["admin", "boss"]
+    assert [u.username for u in s.list_users(role="teacher")] == ["admin", "boss", "teacher1"]
     assert [u.username for u in s.list_users(role="student")] == ["student1"]
 
 
@@ -146,7 +146,7 @@ def test_add_and_remove_role() -> None:
 
     updated = s.add_role(user.id, "teacher")
     assert updated.roles == ["student", "teacher"]
-    assert [u.username for u in s.list_users(role="teacher")] == ["student1"]
+    assert [u.username for u in s.list_users(role="teacher")] == ["admin", "student1"]
 
     updated = s.remove_role(user.id, "student")
     assert updated.roles == ["teacher"]
@@ -161,7 +161,7 @@ def test_remove_last_role_yields_empty_roles() -> None:
 
     assert updated.roles == []
     assert s.list_users(role="student") == []
-    assert s.list_users() == [updated]
+    assert [u.username for u in s.list_users()] == ["admin", updated.username]
 
 
 def test_add_role_unknown_role_raises() -> None:

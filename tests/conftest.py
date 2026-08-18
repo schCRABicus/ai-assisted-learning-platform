@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from agentic_learning_portal.auth import reset_storage
+import pytest
+from dotenv import load_dotenv
+
+from agentic_learning_portal.storage.storage_factory import reset_storage
 
 
 @pytest.fixture(autouse=True)
@@ -55,3 +58,19 @@ def portal_env(tmp_path, monkeypatch):
     reset_storage()
     yield
     reset_storage()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def load_test_environment():
+    # Define paths relative to the root directory
+    root_dir = Path(__file__).parent.parent
+    env_base = root_dir / '.env'
+    env_test = root_dir / '.env.test'
+
+    # Step 1: Load the base .env file first
+    if env_base.exists():
+        load_dotenv(dotenv_path=env_base, override=False)
+
+    # Step 2: Load the .env.test file second, overwriting duplicates
+    if env_test.exists():
+        load_dotenv(dotenv_path=env_test, override=True)
