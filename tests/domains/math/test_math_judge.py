@@ -282,12 +282,15 @@ async def test_translate_to_query_extracts_expression() -> None:
         query = await judge._translate_to_query("Crazy Dave has 7 boxes...")
 
     assert query == "(7*12-28)/8"
-    mock_run.assert_awaited_once_with(
-        model="groq:openai/gpt-oss-120b",
-        output_type=MathQuery,
-        system_prompt=TRANSLATOR_SYSTEM_PROMPT,
-        user_prompt="Crazy Dave has 7 boxes...",
-    )
+    mock_run.assert_awaited_once()
+    await_args = mock_run.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs or {}
+    assert call_kwargs["model"].primary_model == "groq:openai/gpt-oss-120b"
+    assert call_kwargs["model"].secondary_models == ["openai/gpt-oss-20b"]
+    assert call_kwargs["output_type"] == MathQuery
+    assert call_kwargs["system_prompt"] == TRANSLATOR_SYSTEM_PROMPT
+    assert call_kwargs["user_prompt"] == "Crazy Dave has 7 boxes..."
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,10 @@ class LLMError(Exception):
     """Base error for LLM call failures."""
 
 
+class LLMOverloadedError(LLMError):
+    """A transient LLM failure like {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}"""
+
+
 class LLMRetryableError(LLMError):
     """A transient LLM failure worth retrying (rate limit, 5xx, transport)."""
 
@@ -95,6 +99,33 @@ class RateLimiter:
         self._updated = now
 
 
+class ModelChain:
+    """
+    Defines the models chain allowing to fall back to secondary models in case of retries
+    for transient failures.
+    """
+    def __init__(self, primary_model: str, secondary_models: Sequence[str] | None) -> None:
+        self.primary_model = primary_model
+        self.secondary_models = secondary_models if secondary_models is not None else []
+
+        self.current = self.primary_model
+        self.secondary_iterator_idx = 0
+
+    def fallback_to_secondary(self) -> str:
+        if self.secondary_iterator_idx >= len(self.secondary_models):
+            """Exhausted secondary attempts, now try primary again and reset secondary iterator."""
+            self.current = self.primary_model
+            self.secondary_iterator_idx = 0
+            return self.current
+
+        self.current = self.secondary_models[self.secondary_iterator_idx]
+        self.secondary_iterator_idx += 1
+        return self.current
+
+    @property
+    def current_model(self) -> str:
+        return self.current
+
 # Coarse shared backstop: 20 calls/second. Providers have their own quotas; tune
 # this or pass a per-call ``RateLimiter`` when a call needs a different pace.
 DEFAULT_LIMITER = RateLimiter(rate=20, period=1.0)
@@ -103,39 +134,48 @@ DEFAULT_LIMITER = RateLimiter(rate=20, period=1.0)
 #: The model that backs each LLM purpose in the app, kept in one place so
 #: retuning which model does what is a one-line change. Components read their
 #: default from here by key (still overridable per instance via ``model=``).
-MODELS: dict[str, str] = {
+MODELS: dict[str, ModelChain] = {
     # The authoring call: generates a task — problem text, correct answer, and
     # step-by-step solution — from a prompt input. Also the Wolfram|Alpha
     # judge's translation fallback when no Groq key is set (see
     # ``domains.math.judges.build_judge_ensemble``).
-    "task_generation": "google:gemini-3.5-flash",
+    "task_generation": ModelChain(primary_model="google:gemini-3.7-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.5-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
     # Suggests candidate subtopics for a free-text topic in the admin UI.
-    "subtopic_suggestion": "google:gemini-3.5-flash",
+    "subtopic_suggestion": ModelChain(primary_model="google:gemini-3.7-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.5-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
     # Translates a task's prose into a bare Wolfram|Alpha-computable expression
     # (``WolframAlphaJudge``). A different provider/family than the generator so
     # the judge doesn't share the authoring model's blind spots. Served by Groq
     # (which now hosts gpt-oss-120b under the ``openai/`` prefix); the ``groq:``
     # prefix is the pydantic-ai provider, the rest is Groq's model id.
-    "wolfram_translation": "groq:openai/gpt-oss-120b",
+    "wolfram_translation": ModelChain(primary_model="groq:openai/gpt-oss-120b", secondary_models=["openai/gpt-oss-20b"]),
     # Solves the task for an independent numeric answer (``QwenMathJudge``).
-    "qwen_solver": "qwen/qwen3.6-27b",
+    "qwen_solver": ModelChain(primary_model="qwen/qwen3.8-27b", secondary_models=["qwen/qwen3.7-27b", "qwen/qwen3.6-27b"]),
 }
 
 
 def _is_transient(exc: Exception) -> bool:
-    """Default retry predicate: transport errors, rate limits, model hiccups."""
-    if isinstance(exc, (httpx.TransportError, LLMRetryableError)):
+    """Default retry predicate: transport errors, rate limits, overloads, model hiccups."""
+    if isinstance(exc, (httpx.TransportError, LLMRetryableError, LLMOverloadedError, LLMUnavailableError)):
+        return True
+    return isinstance(exc, UnexpectedModelBehavior)
+
+
+def _should_fallback_to_secondary(exc: Exception) -> bool:
+    """Default retry predicate: rate limits, model overloaded."""
+    if isinstance(exc, (LLMOverloadedError, LLMUnavailableError, LLMRetryableError)):
         return True
     return isinstance(exc, UnexpectedModelBehavior)
 
 
 async def retry(
-    fn: Callable[[], Awaitable[T]],
+    fn: Callable[[ModelChain], Awaitable[T]],
     *,
+    model: ModelChain,
     retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
     retry_on: Callable[[Exception], bool] = _is_transient,
+    should_fallback_to_secondary_on: Callable[[Exception], bool] = _should_fallback_to_secondary,
 ) -> T:
     """Run ``fn``, retrying retryable failures with exponential backoff + jitter.
 
@@ -146,11 +186,13 @@ async def retry(
     """
     for attempt in range(retries + 1):
         try:
-            return await fn()
+            return await fn(model)
         except Exception as exc:  # noqa: BLE001 - retry decision delegated to retry_on
             last_exc = exc
             if attempt >= retries or not retry_on(exc):
                 raise
+            if should_fallback_to_secondary_on(last_exc):
+                model.fallback_to_secondary()
             delay = min(max_delay, base_delay * (2**attempt)) * random.uniform(0.5, 1.5)
             logger.warning(
                 "LLM call failed (attempt %d/%d): %s; retrying in %.2fs",
@@ -164,7 +206,7 @@ async def retry(
 
 
 async def ask_ai_for_structured_response(
-    model: str,
+    model: ModelChain,
     output_type: type[OutputT],
     system_prompt: str,
     user_prompt: str,
@@ -181,23 +223,23 @@ async def ask_ai_for_structured_response(
     result with ``isinstance`` where the shape matters.
     """
 
-    async def _call() -> OutputT:
-        agent = Agent(model=model, output_type=output_type, system_prompt=system_prompt)
+    async def _call(model: ModelChain) -> OutputT:
+        agent = Agent(model=model.current_model, output_type=output_type, system_prompt=system_prompt)
         response = await agent.run(user_prompt)
         return response.output
 
-    async def _call_limited() -> OutputT:
+    async def _call_limited(model: ModelChain) -> OutputT:
         if limiter is not None:
             await limiter.acquire()
-        return await _call()
+        return await _call(model)
 
-    return await retry(_call_limited, retries=retries, base_delay=base_delay, max_delay=max_delay)
+    return await retry(_call_limited, model=model, retries=retries, base_delay=base_delay, max_delay=max_delay)
 
 
 async def ask_ai_for_text_response(
     url: str,
     api_key: str,
-    model: str,
+    model: ModelChain,
     messages: Sequence[dict[str, Any]],
     *,
     retries: int = 3,
@@ -215,12 +257,13 @@ async def ask_ai_for_text_response(
     ``httpx.HTTPStatusError`` for other HTTP errors (e.g. 401) and
     ``LLMResponseError`` when the reply shape is unexpected.
     """
-    payload: dict[str, Any] = {"model": model, "messages": list(messages), "temperature": temperature}
+    payload: dict[str, Any] = {"messages": list(messages), "temperature": temperature}
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
 
-    async def _call() -> str:
+    async def _call(model: ModelChain) -> str:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            payload["model"] = model.current_model
             response = await client.post(
                 url,
                 json=payload,
@@ -236,12 +279,12 @@ async def ask_ai_for_text_response(
             raise LLMResponseError(f"Unexpected response shape: {data!r}") from e
         return content.strip() if content else ""
 
-    async def _call_limited() -> str:
+    async def _call_limited(model: ModelChain) -> str:
         if limiter is not None:
             await limiter.acquire()
-        return await _call()
+        return await _call(model)
 
     try:
-        return await retry(_call_limited, retries=retries, base_delay=base_delay, max_delay=max_delay)
+        return await retry(_call_limited, model=model, retries=retries, base_delay=base_delay, max_delay=max_delay)
     except (LLMRetryableError, httpx.TransportError) as e:
         raise LLMUnavailableError(f"LLM unavailable after {retries} retries: {e}") from e

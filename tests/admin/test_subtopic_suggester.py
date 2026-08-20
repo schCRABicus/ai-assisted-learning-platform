@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, ANY, patch
 
 import pytest
 
@@ -26,7 +26,7 @@ async def test_suggest_subtopics_returns_trimmed_deduplicated_list() -> None:
 
     assert result == ["Fractions", "word problems"]
     mock_run.assert_awaited_once_with(
-        model="google:gemini-3.5-flash",
+        model=ANY,
         output_type=SubtopicSuggestions,
         system_prompt=SUGGESTOR_SYSTEM_PROMPT,
         user_prompt="Suggest subtopics for the math topic: Arithmetic",

@@ -21,7 +21,8 @@ def test_build_judge_ensemble_includes_wolfram_with_app_id_only(monkeypatch) -> 
     assert len(judges) == 1
     assert isinstance(judges[0], WolframAlphaJudge)
     # No Groq key -> the Wolfram translator falls back to the Gemini model.
-    assert judges[0]._model == "google:gemini-3.5-flash"
+    # _model is a ModelChain object, not a string, so we check the current_model property.
+    assert judges[0]._model.current_model == "google:gemini-3.7-flash"
 
 
 def test_build_judge_ensemble_includes_qwen_with_groq_key_only(monkeypatch) -> None:
@@ -43,5 +44,5 @@ def test_build_judge_ensemble_includes_both_with_all_keys(monkeypatch) -> None:
     assert len(judges) == 2
     assert isinstance(judges[0], WolframAlphaJudge)
     # With Groq available, the Wolfram judge uses its default Groq translator.
-    assert judges[0]._model == "groq:openai/gpt-oss-120b"
+    assert judges[0]._model.current_model == "groq:openai/gpt-oss-120b"
     assert isinstance(judges[1], QwenMathJudge)

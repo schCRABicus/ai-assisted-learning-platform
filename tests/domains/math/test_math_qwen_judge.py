@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentic_learning_portal.api.llm import LLMResponseError, LLMUnavailableError
+from agentic_learning_portal.api.llm import LLMResponseError, LLMUnavailableError, MODELS as LLM_MODELS
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.api.progress import CollectingProgressListener, ProgressEvent
 from agentic_learning_portal.domains.math.qwen_judge import (
@@ -180,21 +180,21 @@ async def test_query_groq_posts_to_groq_endpoint() -> None:
         answer = await judge._query_groq("What is 3 times 4?")
 
     assert answer == "12"
-    mock_run.assert_awaited_once_with(
-        url=GROQ_CHAT_URL,
-        api_key="test-key",
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"{SOLVER_SYSTEM_PROMPT}\n\nProblem: What is 3 times 4?"
-                ),
-            }
-        ],
-        timeout=60.0,
-        max_tokens=512,
-    )
+    mock_run.assert_awaited_once()
+    await_args = mock_run.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs or {}
+    assert call_kwargs["url"] == GROQ_CHAT_URL
+    assert call_kwargs["api_key"] == "test-key"
+    assert call_kwargs["model"] is LLM_MODELS["qwen_solver"]
+    assert call_kwargs["messages"] == [
+        {
+            "role": "user",
+            "content": f"{SOLVER_SYSTEM_PROMPT}\n\nProblem: What is 3 times 4?",
+        }
+    ]
+    assert call_kwargs["timeout"] == 60.0
+    assert call_kwargs["max_tokens"] == 512
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,36 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude Code Automation Rules
+
+### Read permissions
+Read only files specifically mentioned in prompt via `@`. To read any other file out of scope, always ask for permission first.
+
+Spawn subagents and pick the cheapest model that can handle the job:
+
+- Haiku: bulk mechanical tasks, no judgment needed
+- Sonnet: scoped research, code exploration, synthesis
+- Opus: only when real planning or tradeoffs are involved
+
+### OpenRouter MCP Routing Protocol
+- ALWAYS use the `openrouter__send-message` MCP tool for routine, isolated, or low-complexity tasks to save costs.
+- Do NOT use your native Anthropic API context for simple questions.
+
+### Model Mapping Rules
+- **For file lookups, routine explanations, and minor syntax checks:** Explicitly call the `openrouter__send-message` tool using the model slug `cohere/north-mini-code:free` or `openai/gpt-5.6-luna`.
+- **For basic terminal error parsing:** Pass the raw error snippet to `deepseek/deepseek-v4-flash` via the OpenRouter tool.
+- **For complex architectural refactoring only:** Fall back to your native, internal Claude execution.
+
+### Example Prompt Translation
+- When I ask: "Explain this file", treat it as: "Use openrouter__send-message with cohere/north-mini-code:free to explain this file."
+
+### CRITICAL WORKFLOW RULES:
+1. When a task requires editing, refactoring, or generating a specific single file, do NOT write the code yourself.
+2. Instead, use your `ask_follow_up_agent` or tool-spawning capability to invoke a subagent.
+3. Explicitly override the subagent's target model.
+4. Provide the subagent with exactly ONE file context, the system requirements, and the isolated task.
+5. Once the subagent finishes modifying the file, review their output, run compilation/test tools, and proceed with the next file or file-chunk.
+
 ## Commands
 
 Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).

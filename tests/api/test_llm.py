@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,9 +13,11 @@ import pytest
 from pydantic import BaseModel
 
 from agentic_learning_portal.api.llm import (
+    LLMOverloadedError,
     LLMResponseError,
     LLMRetryableError,
     LLMUnavailableError,
+    ModelChain,
     RateLimiter,
     retry,
     ask_ai_for_text_response,
@@ -89,7 +92,7 @@ async def test_rate_limiter_serializes_concurrent_acquirers() -> None:
 async def test_retry_retries_then_succeeds() -> None:
     calls = 0
 
-    async def _flaky() -> str:
+    async def _flaky(model) -> str:
         nonlocal calls
         calls += 1
         if calls < 3:
@@ -97,7 +100,7 @@ async def test_retry_retries_then_succeeds() -> None:
         return "ok"
 
     with patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()) as mock_sleep:
-        result = await retry(_flaky, retries=5)
+        result = await retry(_flaky, model=ModelChain(primary_model="primary", secondary_models=None), retries=5)
 
     assert result == "ok"
     assert calls == 3
@@ -106,22 +109,22 @@ async def test_retry_retries_then_succeeds() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_gives_up_after_retries() -> None:
-    async def _always_fails() -> str:
+    async def _always_fails(model) -> str:
         raise LLMRetryableError("HTTP 429")
 
     with patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()):
         with pytest.raises(LLMRetryableError, match="429"):
-            await retry(_always_fails, retries=2)
+            await retry(_always_fails, model=ModelChain(primary_model="primary", secondary_models=None), retries=2)
 
 
 @pytest.mark.asyncio
 async def test_retry_does_not_retry_non_transient() -> None:
-    async def _bad() -> str:
+    async def _bad(model) -> str:
         raise ValueError("not transient")
 
     with patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()) as mock_sleep:
         with pytest.raises(ValueError, match="not transient"):
-            await retry(_bad, retries=3)
+            await retry(_bad, model=ModelChain(primary_model="primary", secondary_models=None), retries=3)
 
     mock_sleep.assert_not_awaited()
 
@@ -136,7 +139,7 @@ async def test_ask_ai_for_structured_response_returns_typed_output() -> None:
             return_value=SimpleNamespace(output=_Answer(value="ok"))
         )
         result = await ask_ai_for_structured_response(
-            model="google:gemini-3.5-flash",
+            model=ModelChain(primary_model="google:gemini-3.5-flash", secondary_models=None),
             output_type=_Answer,
             system_prompt="sys",
             user_prompt="usr",
@@ -163,7 +166,7 @@ async def test_ask_ai_for_structured_response_retries_transient_then_succeeds() 
             side_effect=[httpx.ConnectError("boom"), SimpleNamespace(output=_Answer(value="ok"))]
         )
         result = await ask_ai_for_structured_response(
-            model="m",
+            model=ModelChain(primary_model="m", secondary_models=None),
             output_type=_Answer,
             system_prompt="sys",
             user_prompt="usr",
@@ -183,7 +186,9 @@ async def test_ask_ai_for_structured_response_acquires_limiter() -> None:
         mock_agent.return_value.run = AsyncMock(
             return_value=SimpleNamespace(output=_Answer(value="ok"))
         )
-        await ask_ai_for_structured_response("m", _Answer, "sys", "usr", limiter=limiter)
+        await ask_ai_for_structured_response(
+            ModelChain(primary_model="m", secondary_models=None), _Answer, "sys", "usr", limiter=limiter
+        )
 
     limiter.acquire.assert_awaited_once()
 
@@ -201,7 +206,7 @@ async def test_ask_ai_for_text_response_returns_content() -> None:
         result = await ask_ai_for_text_response(
             GROQ_URL,
             api_key="key",
-            model="qwen/qwen3.6-27b",
+            model=ModelChain(primary_model="qwen/qwen3.6-27b", secondary_models=None),
             messages=[{"role": "user", "content": "hi"}],
             limiter=None,
         )
@@ -234,7 +239,7 @@ async def test_ask_ai_for_text_response_retries_rate_limit_then_succeeds() -> No
         result = await ask_ai_for_text_response(
             GROQ_URL,
             api_key="key",
-            model="m",
+            model=ModelChain(primary_model="m", secondary_models=None),
             messages=[{"role": "user", "content": "hi"}],
             retries=3,
             limiter=None,
@@ -262,7 +267,7 @@ async def test_ask_ai_for_text_response_raises_unavailable_after_persistent_rate
             await ask_ai_for_text_response(
                 GROQ_URL,
                 api_key="key",
-                model="m",
+                model=ModelChain(primary_model="m", secondary_models=None),
                 messages=[{"role": "user", "content": "hi"}],
                 retries=2,
                 limiter=None,
@@ -285,7 +290,7 @@ async def test_ask_ai_for_text_response_raises_unavailable_after_persistent_tran
             await ask_ai_for_text_response(
                 GROQ_URL,
                 api_key="key",
-                model="m",
+                model=ModelChain(primary_model="m", secondary_models=None),
                 messages=[{"role": "user", "content": "hi"}],
                 retries=2,
                 limiter=None,
@@ -307,7 +312,7 @@ async def test_ask_ai_for_text_response_raises_response_error_on_malformed_shape
             await ask_ai_for_text_response(
                 GROQ_URL,
                 api_key="key",
-                model="m",
+                model=ModelChain(primary_model="m", secondary_models=None),
                 messages=[{"role": "user", "content": "hi"}],
                 limiter=None,
             )
@@ -326,7 +331,7 @@ async def test_ask_ai_for_text_response_propagates_non_retryable_http_error() ->
             await ask_ai_for_text_response(
                 GROQ_URL,
                 api_key="key",
-                model="m",
+                model=ModelChain(primary_model="m", secondary_models=None),
                 messages=[{"role": "user", "content": "hi"}],
                 retries=2,
                 limiter=None,
@@ -347,9 +352,283 @@ async def test_ask_ai_for_text_response_acquires_limiter() -> None:
         await ask_ai_for_text_response(
             GROQ_URL,
             api_key="key",
-            model="m",
+            model=ModelChain(primary_model="m", secondary_models=None),
             messages=[{"role": "user", "content": "hi"}],
             limiter=limiter,
         )
 
     limiter.acquire.assert_awaited_once()
+
+
+# --- round-robin fallback to secondary models ----------------------------------
+#
+# On a retryable failure the retry is expected to advance to the next model in
+# the chain (round-robin) instead of hammering the same overloaded or
+# rate-limited model. A plain ``str`` is a chain of one and keeps retrying the
+# same model. These tests cover the three transient error types:
+# ``LLMOverloadedError``, ``LLMRetryableError`` and ``LLMUnavailableError``.
+
+_TRANSIENT_ERRORS = [LLMOverloadedError, LLMRetryableError, LLMUnavailableError]
+
+
+def _recording_agent_factory(models_used: list[str], error: Exception, succeed_after: int) -> Callable:
+    """Stand-in for ``Agent`` that records the model of each construction.
+
+    The first ``succeed_after`` constructions get a ``run`` that raises
+    ``error``; later ones succeed with a valid structured output.
+    """
+    calls = 0
+
+    def _factory(**kwargs):
+        nonlocal calls
+        calls += 1
+        models_used.append(kwargs["model"])
+        instance = MagicMock()
+        if calls <= succeed_after:
+            instance.run = AsyncMock(side_effect=error)
+        else:
+            instance.run = AsyncMock(return_value=SimpleNamespace(output=_Answer(value="ok")))
+        return instance
+
+    return _factory
+
+
+def _recording_post(models_used: list[str], error: Exception, succeed_after: int) -> Callable:
+    """Stand-in for ``httpx.AsyncClient.post`` recording each payload model.
+
+    The first ``succeed_after`` calls raise ``error``; later ones return a
+    valid chat-completion response.
+    """
+    calls = 0
+
+    def _post(url, *, json=None, headers=None):
+        nonlocal calls
+        calls += 1
+        models_used.append(json["model"])
+        if calls <= succeed_after:
+            raise error
+        return _json_response("12")
+
+    return _post
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", _TRANSIENT_ERRORS, ids=lambda t: t.__name__)
+async def test_ask_ai_for_structured_response_round_robins_to_secondary_on_transient_error(
+    error_type,
+) -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary"])
+
+    with (
+        patch(
+            "agentic_learning_portal.api.llm.Agent",
+            side_effect=_recording_agent_factory(models_used, error_type("boom"), succeed_after=1),
+        ),
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await ask_ai_for_structured_response(
+            model=chain,
+            output_type=_Answer,
+            system_prompt="sys",
+            user_prompt="usr",
+            retries=3,
+            limiter=None,
+        )
+
+    assert result.value == "ok"
+    assert models_used == ["primary", "secondary"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_structured_response_round_robins_through_all_secondary_models() -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary1", "secondary2"])
+
+    with (
+        patch(
+            "agentic_learning_portal.api.llm.Agent",
+            side_effect=_recording_agent_factory(models_used, LLMRetryableError("boom"), succeed_after=2),
+        ),
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await ask_ai_for_structured_response(
+            model=chain,
+            output_type=_Answer,
+            system_prompt="sys",
+            user_prompt="usr",
+            retries=3,
+            limiter=None,
+        )
+
+    assert result.value == "ok"
+    assert models_used == ["primary", "secondary1", "secondary2"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_structured_response_round_robin_wraps_around_to_primary() -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary"])
+
+    with (
+        patch(
+            "agentic_learning_portal.api.llm.Agent",
+            side_effect=_recording_agent_factory(models_used, LLMRetryableError("boom"), succeed_after=2),
+        ),
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await ask_ai_for_structured_response(
+            model=chain,
+            output_type=_Answer,
+            system_prompt="sys",
+            user_prompt="usr",
+            retries=3,
+            limiter=None,
+        )
+
+    assert result.value == "ok"
+    assert models_used == ["primary", "secondary", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_structured_response_reuses_single_model_on_retry() -> None:
+    models_used: list[str] = []
+
+    with (
+        patch(
+            "agentic_learning_portal.api.llm.Agent",
+            side_effect=_recording_agent_factory(models_used, LLMRetryableError("boom"), succeed_after=1),
+        ),
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await ask_ai_for_structured_response(
+            model=ModelChain(primary_model="only-model", secondary_models=None),
+            output_type=_Answer,
+            system_prompt="sys",
+            user_prompt="usr",
+            retries=3,
+            limiter=None,
+        )
+
+    assert result.value == "ok"
+    assert models_used == ["only-model", "only-model"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", _TRANSIENT_ERRORS, ids=lambda t: t.__name__)
+async def test_ask_ai_for_text_response_round_robins_to_secondary_on_transient_error(
+    error_type,
+) -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary"])
+
+    with (
+        patch("agentic_learning_portal.api.llm.httpx.AsyncClient") as mock_cls,
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        mock_client = _mock_httpx_client()
+        mock_cls.return_value = mock_client
+        mock_client.post = AsyncMock(
+            side_effect=_recording_post(models_used, error_type("boom"), succeed_after=1)
+        )
+
+        result = await ask_ai_for_text_response(
+            GROQ_URL,
+            api_key="key",
+            model=chain,
+            messages=[{"role": "user", "content": "hi"}],
+            retries=3,
+            limiter=None,
+        )
+
+    assert result == "12"
+    assert models_used == ["primary", "secondary"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_text_response_round_robins_through_all_secondary_models() -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary1", "secondary2"])
+
+    with (
+        patch("agentic_learning_portal.api.llm.httpx.AsyncClient") as mock_cls,
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        mock_client = _mock_httpx_client()
+        mock_cls.return_value = mock_client
+        mock_client.post = AsyncMock(
+            side_effect=_recording_post(models_used, LLMRetryableError("boom"), succeed_after=2)
+        )
+
+        result = await ask_ai_for_text_response(
+            GROQ_URL,
+            api_key="key",
+            model=chain,
+            messages=[{"role": "user", "content": "hi"}],
+            retries=3,
+            limiter=None,
+        )
+
+    assert result == "12"
+    assert models_used == ["primary", "secondary1", "secondary2"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_text_response_round_robin_wraps_around_to_primary() -> None:
+    models_used: list[str] = []
+    chain = ModelChain(primary_model="primary", secondary_models=["secondary"])
+
+    with (
+        patch("agentic_learning_portal.api.llm.httpx.AsyncClient") as mock_cls,
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        mock_client = _mock_httpx_client()
+        mock_cls.return_value = mock_client
+        mock_client.post = AsyncMock(
+            side_effect=_recording_post(models_used, LLMRetryableError("boom"), succeed_after=2)
+        )
+
+        result = await ask_ai_for_text_response(
+            GROQ_URL,
+            api_key="key",
+            model=chain,
+            messages=[{"role": "user", "content": "hi"}],
+            retries=3,
+            limiter=None,
+        )
+
+    assert result == "12"
+    assert models_used == ["primary", "secondary", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_for_text_response_round_robins_to_secondary_on_http_503() -> None:
+    models_used: list[str] = []
+    overloaded = MagicMock()
+    overloaded.status_code = 503
+
+    def _post(url, *, json=None, headers=None):
+        models_used.append(json["model"])
+        if len(models_used) == 1:
+            return overloaded
+        return _json_response("12")
+
+    with (
+        patch("agentic_learning_portal.api.llm.httpx.AsyncClient") as mock_cls,
+        patch("agentic_learning_portal.api.llm.asyncio.sleep", new=AsyncMock()),
+    ):
+        mock_client = _mock_httpx_client()
+        mock_cls.return_value = mock_client
+        mock_client.post = AsyncMock(side_effect=_post)
+
+        result = await ask_ai_for_text_response(
+            GROQ_URL,
+            api_key="key",
+            model=ModelChain(primary_model="primary", secondary_models=["secondary"]),
+            messages=[{"role": "user", "content": "hi"}],
+            retries=3,
+            limiter=None,
+        )
+
+    assert result == "12"
+    assert models_used == ["primary", "secondary"]

@@ -7,6 +7,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from agentic_learning_portal.api.llm import MODELS, ask_ai_for_structured_response
+from agentic_learning_portal.api.llm import ModelChain
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class SubtopicSuggestions(BaseModel):
 async def suggest_subtopics(
     topic: str,
     *,
-    model: str = MODELS["subtopic_suggestion"],
+    model: ModelChain = MODELS["subtopic_suggestion"],
     max_subtopics: int = 8,
 ) -> list[str]:
     """Suggest subtopics for ``topic`` with a single LLM call.
