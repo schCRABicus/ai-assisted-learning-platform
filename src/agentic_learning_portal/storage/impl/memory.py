@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from agentic_learning_portal.api.model import GeneratedTask
-from agentic_learning_portal.storage.base import Storage
+from agentic_learning_portal.storage.api import Storage
 from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,

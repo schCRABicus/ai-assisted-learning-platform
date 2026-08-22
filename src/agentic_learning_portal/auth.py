@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from agentic_learning_portal.storage import InMemoryStorage, RoleName, SqliteStorage, Storage, User
-from agentic_learning_portal.storage.storage_factory import StorageFactory
+from agentic_learning_portal.storage import RoleName, Storage, User
+from agentic_learning_portal.storage.factory import StorageFactory
 
 STORAGE_FACTORY = StorageFactory()
 

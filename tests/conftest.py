@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from agentic_learning_portal.storage.storage_factory import reset_storage
+from agentic_learning_portal.storage.factory import reset_storage
 
 
 @pytest.fixture(autouse=True)

@@ -16,7 +16,7 @@ from yoyo.backends import SQLiteBackend
 from yoyo.connections import parse_uri
 
 from agentic_learning_portal.api.model import GeneratedTask
-from agentic_learning_portal.storage.base import Storage
+from agentic_learning_portal.storage.api import Storage
 from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,
@@ -40,7 +40,7 @@ class _FastLogMixin:
     can stall for seconds when the local hostname isn't resolvable (common on
     dev laptops). The hostname is only migration-log metadata, so the instant
     ``socket.gethostname()`` is enough. Mirrors yoyo's dict format from
-    ``yoyo/backends/base.py``, minus the lookup.
+    ``yoyo/backends/api.py``, minus the lookup.
     """
 
     def get_log_data(self, migration=None, operation="apply"):
