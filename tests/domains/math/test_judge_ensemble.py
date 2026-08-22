@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agentic_learning_portal.api.llm import MODELS
 from agentic_learning_portal.domains.math import build_judge_ensemble
 from agentic_learning_portal.domains.math.qwen_judge import QwenMathJudge
 from agentic_learning_portal.domains.math.wa_judge import WolframAlphaJudge
@@ -20,9 +21,11 @@ def test_build_judge_ensemble_includes_wolfram_with_app_id_only(monkeypatch) -> 
 
     assert len(judges) == 1
     assert isinstance(judges[0], WolframAlphaJudge)
-    # No Groq key -> the Wolfram translator falls back to the Gemini model.
-    # _model is a ModelChain object, not a string, so we check the current_model property.
-    assert judges[0]._model.current_model == "google:gemini-3.7-flash"
+    # No Groq key -> the Wolfram translator reuses the task-generation Gemini
+    # chain. Assert object identity (not ``current_model``): ``MODELS`` is a
+    # module-level singleton, and other tests exercise the retry path that calls
+    # ``fallback_to_secondary()`` on it, so its ``current`` model is mutable.
+    assert judges[0]._model is MODELS["task_generation"]
 
 
 def test_build_judge_ensemble_includes_qwen_with_groq_key_only(monkeypatch) -> None:

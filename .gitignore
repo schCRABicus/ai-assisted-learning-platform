@@ -7,6 +7,7 @@ wheels/
 *.egg-info
 .env
 .idea
+.claude/*.local*.json
 
 # Local portal database (default PORTAL_DB_PATH)
 *.db

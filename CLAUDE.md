@@ -4,6 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Claude Code Automation Rules
 
+### System Instruction
+You are the Master Architect. Your sole responsibility is reasoning, architectural planning, and workflow orchestration. You do not write final application code blocks.
+
+OPERATIONAL PROTOCOL:
+1. PHASE 1 (REASONING): When a task is assigned, use your thinking budget to analyze the request. Map out the code architecture, state changes, file dependencies, and potential edge cases.
+2. PHASE 2 (STRATEGY): Break the massive task down into highly isolated, atomic, file-specific or function-specific tasks.
+3. PHASE 3 (DELEGATION): For every single atomic task identified, spawn a dedicated subagent. 
+
+SUBAGENT SPAWNING RULES:
+- You must call your subagent tool (e.g., `ask_follow_up_agent` or your environment's equivalent agent-spawning command).
+- For each subagent request, clearly specify the target model (e.g., `google/gemma-4-31b-it:free` or `cohere/north-mini-code:free`).
+- Provide the subagent with:
+  a) The exact file path to modify or create.
+  b) The structural blueprint you designed in Phase 1.
+  c) The specific constraints, inputs, and expected outputs for that file alone.
+- You must wait for the subagent to report back with its work before spawning the next subagent in the sequence.
+
+CRITICAL CONSTRAINT: 
+Do not output code blocks inside your main chat window. If a subagent fails, do not fix the code yourself; instead, re-analyze the error and send corrective instructions to a new subagent instance.
+
 ### Read permissions
 Read only files specifically mentioned in prompt via `@`. To read any other file out of scope, always ask for permission first.
 
@@ -12,18 +32,6 @@ Spawn subagents and pick the cheapest model that can handle the job:
 - Haiku: bulk mechanical tasks, no judgment needed
 - Sonnet: scoped research, code exploration, synthesis
 - Opus: only when real planning or tradeoffs are involved
-
-### OpenRouter MCP Routing Protocol
-- ALWAYS use the `openrouter__send-message` MCP tool for routine, isolated, or low-complexity tasks to save costs.
-- Do NOT use your native Anthropic API context for simple questions.
-
-### Model Mapping Rules
-- **For file lookups, routine explanations, and minor syntax checks:** Explicitly call the `openrouter__send-message` tool using the model slug `cohere/north-mini-code:free` or `openai/gpt-5.6-luna`.
-- **For basic terminal error parsing:** Pass the raw error snippet to `deepseek/deepseek-v4-flash` via the OpenRouter tool.
-- **For complex architectural refactoring only:** Fall back to your native, internal Claude execution.
-
-### Example Prompt Translation
-- When I ask: "Explain this file", treat it as: "Use openrouter__send-message with cohere/north-mini-code:free to explain this file."
 
 ### CRITICAL WORKFLOW RULES:
 1. When a task requires editing, refactoring, or generating a specific single file, do NOT write the code yourself.
@@ -72,30 +80,48 @@ The package is split into a generic **api layer** and domain-specific **domains*
 - `app.py` — the single Streamlit entry point. `st.navigation` maps each page
   to a distinct URL: `pages/admin.py` → `/admin` (default), and a
   `pages/student.py` placeholder → `/student`. Launch with `uv run run-portal`.
-- `pages/admin.py` — the admin endpoint. As soon as a free-text topic is
-  entered, an LLM call populates a multi-select of subtopic suggestions
-  (session state records the topic they were generated for so it fires once
-  per topic change); grade/complexity dropdowns plus a context field drive
-  generation via `MathProblemGenerator`, and a single prominent "Generate
-  task" button presents the resulting task (problem, correct answer,
-  solution). Generation runs in a background daemon thread: the worker emits
-  `ProgressEvent` objects through a `CollectingProgressListener` into a plain
-  `gen_state` dict in session state. The page renders the progress in a *single*
-  script run — it drains the tail of the log every `POLL_INTERVAL_S` and appends
-  each new step (`st.markdown`) to an `st.status` panel once, never re-rendering
-  previous lines; Streamlit streams those deltas live, so the panel ticks
-  generation attempt → schema validation → each judge's verification → retries
-  as they land with no per-poll rerun (which would make the page jump). When the
-  thread finishes the page reruns once to re-enable the button and show the
-  result, and a collapsed "Generation steps" expander keeps the history.
-  Verification uses `build_judge_ensemble()` (so the admin page mirrors the demo
-  CLI: judges only when their env keys are set, plain generation otherwise). The
-  button disables itself while generating, so a double-click can't start a
-  second generation. A comma-separated field lets the admin add subtopics
+- `pages/admin.py` — the admin endpoint, which is assignment-centric. The
+  landing view is just an assignment-creation form: a title input + "➕ Add
+  assignment" button. On click the assignment is persisted immediately via
+  `storage.create_assignment(title, created_by=user.id)` (so it has a name, an
+  id, and storage presence before any task exists) and the page swaps to a
+  *native* Streamlit carousel (no third-party component). The carousel renders
+  the current task slot as a bordered card (one per assignment task) flanked by
+  ◀/▶ arrow buttons that are part of the carousel itself — there is no separate
+  navigation row — with a "➕ Add task" button to its right that appends a slot
+  and navigates to it, and a "Task X of Y" counter + ○●○ dots below. A slide's
+  content depends on its slot's state (all in `carousel_*` session-state keys):
+  an empty slot shows just a "✨ Generate task" button; clicking it reveals the
+  generation form *embedded in the slide* (the form is never shown otherwise);
+  while generating, a live `st.status` progress panel replaces the form; once
+  generated, the slide shows the finished task card. "❌ Cancel assignment"
+  clears the session state (the stored assignment and any generated tasks
+  survive) and "🏁 Finish" clears it after showing a summary. The embedded form
+  reuses the same generation controls with unique `carousel_*` keys per slot: as
+  soon as a free-text topic is entered, an LLM call populates a multi-select of
+  subtopic suggestions (fires once per topic change, degrades to a warning +
+  manual comma-separated entry when the suggestion fails); grade/complexity
+  dropdowns plus a context field drive generation via `MathProblemGenerator`.
+  Generation runs in a background daemon thread: the worker emits
+  `ProgressEvent` objects through a `CollectingProgressListener` into the slot's
+  `carousel_gen_state_{i}` dict. The page shows live progress by *re-running
+  every `POLL_INTERVAL_S`*: each run re-renders the slot's `st.status` panel
+  with the log accumulated so far, then sleeps and reruns until the thread
+  sets `result`/`error`, so the panel ticks generation attempt → schema
+  validation → each judge's verification → retries as they land. When the thread
+  finishes, the page persists the task via `storage.create_task(task)` +
+  `storage.add_task_to_assignment(assignment_id, task_id)` and shows the card.
+  Each rerun also calls `_sync_assignment_tasks_from_storage()`, which backfills
+  any slot whose in-session task was lost from the assignment's persisted tasks
+  (storage is the source of truth), so a generated task can't disappear after
+  navigation. Verification uses `build_judge_ensemble()` (so the admin page
+  mirrors the demo CLI: judges only when their env keys are set, plain
+  generation otherwise). A comma-separated field lets the admin add subtopics
   manually. The problem text and solution pass through
   `admin/formatting.latex_to_plain_text` before rendering, because the model
   occasionally emits LaTeX (`$$...$$`, `\text{}`, `\frac{}{}`, a stray `\558`)
-  despite prompt instructions to write math in plain text.
+  despite prompt instructions to write math in
+  plain text.
 - `admin/subtopic_suggester.py` — `suggest_subtopics(topic)`: a best-effort
   structured LLM call through `api/llm.ask_ai_for_structured_response` (default
   `google:gemini-3.5-flash`) that returns trimmed, de-duplicated subtopic

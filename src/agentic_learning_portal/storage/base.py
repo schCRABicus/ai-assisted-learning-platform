@@ -118,6 +118,8 @@ class Storage(ABC):
     ) -> list[Assignment]:
         """Return assignments, optionally filtered by creator or assignee."""
 
+    # --- assignment management ----------------------------------------------------
+
     @abstractmethod
     def add_task_to_assignment(
         self,
