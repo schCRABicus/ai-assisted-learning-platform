@@ -9,7 +9,7 @@ from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.domains.math import MathProblemGenerator
 
 ADMIN_PAGE = (
-    Path(__file__).resolve().parents[2] / "src" / "agentic_learning_portal" / "pages" / "admin.py"
+    Path(__file__).resolve().parents[2] / "src" / "agentic_learning_portal" / "views" / "admin.py"
 )
 
 

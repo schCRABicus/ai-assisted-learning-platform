@@ -1,6 +1,6 @@
 """Single Streamlit entry point for the Agentic Learning Portal.
 
-Admin and (future) student pages are exposed as distinct endpoints via
+Admin and (future) student views are exposed as distinct endpoints via
 ``st.navigation`` (``/admin``, ``/student``). Launch with ``uv run run-portal``.
 """
 
@@ -17,7 +17,7 @@ from agentic_learning_portal.auth import render_sidebar_user
 # Load API keys (e.g. GOOGLE_API_KEY) from .env before any page runs.
 load_dotenv()
 
-PAGES_DIR = Path(__file__).parent / "pages"
+PAGES_DIR = Path(__file__).parent / "views"
 
 st.set_page_config(page_title="Agentic Learning Portal", page_icon="🎓", layout="wide")
 
@@ -27,6 +27,13 @@ admin = st.Page(
     icon="🎓",
     url_path="admin",
     default=True,
+)
+assignments = st.Page(
+    str(PAGES_DIR / "admin/assignments.py"),
+    title="Assignments",
+    icon="🎓",
+    url_path="assignments",
+    default=False,
 )
 student = st.Page(
     str(PAGES_DIR / "student.py"),
@@ -39,7 +46,10 @@ student = st.Page(
 # themselves (see ``auth.require_roles``), so this is cosmetic, not a gate.
 render_sidebar_user()
 
-pg = st.navigation([admin, student])
+pg = st.navigation({
+    "Admin": [admin, assignments],
+    "Student": [student]
+})
 pg.run()
 
 

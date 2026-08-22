@@ -1,4 +1,4 @@
-"""Authentication and authorization for the Streamlit portal pages.
+"""Authentication and authorization for the Streamlit portal views.
 
 All identity lives in ``st.session_state`` (there is no server-side session),
 so the guards are safe across Streamlit's stateless script reruns. Credentials
@@ -12,8 +12,8 @@ Which backend ``get_storage`` builds is selected by ``STORAGE_BACKEND``:
 instant, nothing persisted, for tests and throwaway use).
 
 Page guards:
-- ``require_roles("admin", "teacher")`` gates admin pages (task generation).
-- ``require_roles()`` with no roles gates student pages for any authenticated user.
+- ``require_roles("admin", "teacher")`` gates admin views (task generation).
+- ``require_roles()`` with no roles gates student views for any authenticated user.
 
 Role-based on purpose: the guards never inspect *how* a user was authenticated,
 so the login mechanism is a swap-in seam. Today it's local username/password;
@@ -105,12 +105,12 @@ def render_sidebar_user() -> None:
 def require_roles(*roles: RoleName) -> User:
     """Gate the current page behind authentication and role membership.
 
-    With no ``roles``, any authenticated user passes (student pages). With
+    With no ``roles``, any authenticated user passes (student views). With
     roles given (e.g. ``"admin", "teacher"``), the user must hold at least one.
     When not signed in, renders the login form; when signed in but lacking a
     required role, renders an access-denied message. Both cases stop the page,
     so nothing below the guard runs. Returns the authenticated ``User`` on
-    success so pages can greet/identify them.
+    success so views can greet/identify them.
     """
     user = current_user()
     if user is None:
