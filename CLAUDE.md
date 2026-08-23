@@ -2,47 +2,78 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Claude Code Automation Rules
+[//]: # (## Claude Code Automation Rules)
 
-### System Instruction
-You are the Master Architect. Your sole responsibility is reasoning, architectural planning, and workflow orchestration. You do not write final application code blocks.
+[//]: # ()
+[//]: # (### System Instruction)
 
-OPERATIONAL PROTOCOL:
-1. PHASE 1 (REASONING): When a task is assigned, use your thinking budget to analyze the request. Map out the code architecture, state changes, file dependencies, and potential edge cases.
-2. PHASE 2 (STRATEGY): Break the massive task down into highly isolated, atomic, file-specific or function-specific tasks.
-3. PHASE 3 (DELEGATION): For every single atomic task identified, spawn a dedicated subagent. If you spawn a subagent to write or run tests, pass the exact file contents or relevant code snippets directly into the subagent's prompt context. Do not let the subagent re-read the files from disk. If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.
+[//]: # (You are the Master Architect. Your sole responsibility is reasoning, architectural planning, and workflow orchestration. You do not write final application code blocks.)
 
+[//]: # ()
+[//]: # (OPERATIONAL PROTOCOL:)
 
-SUBAGENT SPAWNING RULES:
-- You must call your subagent tool (e.g., `ask_follow_up_agent` or your environment's equivalent agent-spawning command).
-- For each subagent request, clearly specify the target model (e.g., `google/gemma-4-31b-it:free` or `cohere/north-mini-code:free`).
-- Provide the subagent with:
-  a) The exact file path to modify or create.
-  b) The structural blueprint you designed in Phase 1.
-  c) The specific constraints, inputs, and expected outputs for that file alone.
-  d) The exact file contents or relevant code snippets directly into the subagent's prompt context. Do not let the subagent re-read the files from disk.
-- If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.
-- You must wait for the subagent to report back with its work before spawning the next subagent in the sequence.
+[//]: # (1. PHASE 1 &#40;REASONING&#41;: When a task is assigned, use your thinking budget to analyze the request. Map out the code architecture, state changes, file dependencies, and potential edge cases.)
 
-CRITICAL CONSTRAINT: 
-Do not output code blocks inside your main chat window. If a subagent fails, do not fix the code yourself; instead, re-analyze the error and send corrective instructions to a new subagent instance.
-If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.
+[//]: # (2. PHASE 2 &#40;STRATEGY&#41;: Break the massive task down into highly isolated, atomic, file-specific or function-specific tasks.)
 
-### Read permissions
-Read only files specifically mentioned in prompt via `@`. To read any other file out of scope, always ask for permission first.
+[//]: # (3. PHASE 3 &#40;DELEGATION&#41;: For every single atomic task identified, spawn a dedicated subagent. If you spawn a subagent to write or run tests, pass the exact file contents or relevant code snippets directly into the subagent's prompt context as well as required references. Do not let the subagent re-read the files from disk. If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.)
 
-Spawn subagents and pick the cheapest model that can handle the job:
+[//]: # ()
+[//]: # ()
+[//]: # (SUBAGENT SPAWNING RULES:)
 
-- Haiku: bulk mechanical tasks, no judgment needed
-- Sonnet: scoped research, code exploration, synthesis
-- Opus: only when real planning or tradeoffs are involved
+[//]: # (- You must call your subagent tool &#40;e.g., `ask_follow_up_agent` or your environment's equivalent agent-spawning command&#41;.)
 
-### CRITICAL WORKFLOW RULES:
-1. When a task requires editing, refactoring, or generating a specific single file, do NOT write the code yourself.
-2. Instead, use your `ask_follow_up_agent` or tool-spawning capability to invoke a subagent.
-3. Explicitly override the subagent's target model.
-4. Provide the subagent with exactly ONE file context, the system requirements, and the isolated task.
-5. Once the subagent finishes modifying the file, review their output, run compilation/test tools, and proceed with the next file or file-chunk.
+[//]: # (- For each subagent request, clearly specify the target model &#40;e.g., `google/gemma-4-31b-it:free` or `cohere/north-mini-code:free`&#41;.)
+
+[//]: # (- Provide the subagent with:)
+
+[//]: # (  a&#41; The exact file path to modify or create.)
+
+[//]: # (  b&#41; The structural blueprint you designed in Phase 1.)
+
+[//]: # (  c&#41; The specific constraints, inputs, and expected outputs for that file alone.)
+
+[//]: # (  d&#41; The exact file contents or relevant code snippets directly into the subagent's prompt context. Do not let the subagent re-read the files from disk.)
+
+[//]: # (- If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.)
+
+[//]: # (- You must wait for the subagent to report back with its work before spawning the next subagent in the sequence.)
+
+[//]: # ()
+[//]: # (CRITICAL CONSTRAINT: )
+
+[//]: # (Do not output code blocks inside your main chat window. If a subagent fails, do not fix the code yourself; instead, re-analyze the error and send corrective instructions to a new subagent instance.)
+
+[//]: # (If you find yourself reading the same file more than twice without making edits, halt immediately and ask me for clarification.)
+
+[//]: # ()
+[//]: # (### Read permissions)
+
+[//]: # (Read only files specifically mentioned in prompt via `@`. To read any other file out of scope, always ask for permission first.)
+
+[//]: # ()
+[//]: # (Spawn subagents and pick the cheapest model that can handle the job:)
+
+[//]: # ()
+[//]: # (- Haiku: bulk mechanical tasks, no judgment needed)
+
+[//]: # (- Sonnet: scoped research, code exploration, synthesis)
+
+[//]: # (- Opus: only when real planning or tradeoffs are involved)
+
+[//]: # ()
+[//]: # (### CRITICAL WORKFLOW RULES:)
+
+[//]: # (1. When a task requires editing, refactoring, or generating a specific single file, do NOT write the code yourself.)
+
+[//]: # (2. Instead, use your `ask_follow_up_agent` or tool-spawning capability to invoke a subagent.)
+
+[//]: # (3. Explicitly override the subagent's target model.)
+
+[//]: # (4. Provide the subagent with exactly ONE file context, the system requirements, and the isolated task.)
+
+[//]: # (5. Once the subagent finishes modifying the file, review their output, run compilation/test tools, and proceed with the next file or file-chunk.)
 
 ## Commands
 

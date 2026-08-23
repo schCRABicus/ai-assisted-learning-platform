@@ -27,7 +27,10 @@ _MEMORY_STORAGE: InMemoryStorage | None = None
 class StorageFactory:
 
     def __init__(self):
-        self.storage_backend = os.getenv("STORAGE_BACKEND", "sqlite")
+        # The backend is resolved lazily in ``get_storage`` rather than captured
+        # here, so tests and ``.env`` can switch ``STORAGE_BACKEND`` after import
+        # (see the docstring on ``get_storage``).
+        pass
 
     def get_storage(self) -> Storage:
         """Return the :class:`Storage` the portal should use.
@@ -40,7 +43,7 @@ class StorageFactory:
         """
         # Read the env var at call time so tests (and .env) can switch backends
         # after ``auth`` is imported.
-        if self.storage_backend == "memory":
+        if os.getenv("STORAGE_BACKEND", "sqlite") == "memory":
             global _MEMORY_STORAGE
             if _MEMORY_STORAGE is None:
                 _MEMORY_STORAGE = InMemoryStorage()
