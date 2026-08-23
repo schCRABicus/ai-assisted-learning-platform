@@ -103,11 +103,16 @@ class Storage(ABC):
         *,
         assigned_to: int | None = None,
     ) -> Assignment:
-        """Create and return a new assignment."""
+        """Create and return a new assignment (with an empty lazy ``tasks`` list)."""
 
     @abstractmethod
     def get_assignment(self, assignment_id: int) -> Assignment | None:
-        """Return the assignment with ``assignment_id``, or ``None`` if missing."""
+        """Return the assignment with ``assignment_id``, or ``None`` if missing.
+
+        The returned ``Assignment.tasks`` is a lazy ``LazyTaskList``: its
+        ``size`` (task count) is joined in when loading, while the task
+        contents are only fetched on first access.
+        """
 
     @abstractmethod
     def list_assignments(
@@ -116,7 +121,18 @@ class Storage(ABC):
         created_by: int | None = None,
         assigned_to: int | None = None,
     ) -> list[Assignment]:
-        """Return assignments, optionally filtered by creator or assignee."""
+        """Return assignments, optionally filtered by creator or assignee.
+
+        Each assignment's ``tasks`` is a lazy ``LazyTaskList``: its ``size``
+        (task count) is joined in without loading the tasks themselves; the
+        task contents are only fetched on first access.
+        """
+
+    @abstractmethod
+    def delete_assignment(self, assignment_id: int) -> int | None:
+        """Delete an assignment and related tasks and return its ``id``, if exists.
+        Otherwise, return ``None``.
+        """
 
     # --- assignment management ----------------------------------------------------
 

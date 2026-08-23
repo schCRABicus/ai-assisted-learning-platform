@@ -9,6 +9,7 @@ constraint violations raise ``ValueError`` rather than ``sqlite3.IntegrityError`
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.storage import (
@@ -343,6 +344,176 @@ def test_add_same_task_twice_raises() -> None:
 
     with pytest.raises(ValueError, match="already in assignment"):
         s.add_task_to_assignment(assignment.id, task.id)
+
+
+def test_assignment_tasks_size_known_without_loading_content() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Lazy", teacher.id)
+    t1 = s.create_task(_task(text="first"))
+    t2 = s.create_task(_task(text="second"))
+    s.add_task_to_assignment(assignment.id, t1.id)
+    s.add_task_to_assignment(assignment.id, t2.id)
+
+    a = s.get_assignment(assignment.id)
+    assert a.tasks.size == 2
+    assert len(a.tasks) == 2
+    assert a.tasks.loaded is False
+
+    with patch.object(s, "list_assignment_tasks", side_effect=AssertionError("tasks fetched eagerly")):
+        fetched = s.get_assignment(assignment.id)
+        assert len(fetched.tasks) == 2
+        assert fetched.tasks.size == 2
+
+
+def test_assignment_tasks_content_loads_on_first_access() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Lazy", teacher.id)
+    t1 = s.create_task(_task(text="first"))
+    t2 = s.create_task(_task(text="second"))
+    s.add_task_to_assignment(assignment.id, t1.id)
+    s.add_task_to_assignment(assignment.id, t2.id)
+
+    a = s.get_assignment(assignment.id)
+    assert a.tasks.loaded is False
+
+    assert [t.text for t in a.tasks] == ["first", "second"]
+    assert a.tasks.loaded is True
+    assert a.tasks[0].text == "first"
+
+
+def test_list_assignments_reports_task_counts() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    empty = s.create_assignment("Empty", teacher.id)
+    with_one = s.create_assignment("With one", teacher.id)
+    task = s.create_task(_task(text="only"))
+    s.add_task_to_assignment(with_one.id, task.id)
+
+    assignments = {a.id: a for a in s.list_assignments()}
+    assert assignments[empty.id].tasks.size == 0
+    assert assignments[with_one.id].tasks.size == 1
+    assert assignments[empty.id].tasks.loaded is False
+    assert assignments[with_one.id].tasks.loaded is False
+    assert [t.text for t in assignments[with_one.id].tasks] == ["only"]
+
+
+def test_created_assignment_has_empty_lazy_tasks() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+
+    assignment = s.create_assignment("Fresh", teacher.id)
+
+    assert assignment.tasks.size == 0
+    assert len(assignment.tasks) == 0
+    assert assignment.tasks.loaded is False
+
+
+def test_delete_assignment_removes_assignment() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Doomed", teacher.id)
+    task = s.create_task(_task())
+    s.add_task_to_assignment(assignment.id, task.id)
+
+    s.delete_assignment(assignment.id)
+
+    assert s.get_assignment(assignment.id) is None
+    assert [a.id for a in s.list_assignments()] == []
+
+
+def test_delete_assignment_deletes_associated_tasks() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Doomed", teacher.id)
+    t1 = s.create_task(_task(text="first"))
+    t2 = s.create_task(_task(text="second"))
+    s.add_task_to_assignment(assignment.id, t1.id)
+    s.add_task_to_assignment(assignment.id, t2.id)
+
+    s.delete_assignment(assignment.id)
+
+    assert s.get_task(t1.id) is None
+    assert s.get_task(t2.id) is None
+    assert [t.id for t in s.list_tasks()] == []
+
+
+def test_delete_assignment_removes_task_links() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Doomed", teacher.id)
+    task = s.create_task(_task())
+    s.add_task_to_assignment(assignment.id, task.id)
+
+    s.delete_assignment(assignment.id)
+
+    assert s.list_assignment_tasks(assignment.id) == []
+
+
+def test_delete_assignment_with_no_tasks() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Empty", teacher.id)
+
+    s.delete_assignment(assignment.id)
+
+    assert s.get_assignment(assignment.id) is None
+
+
+def test_delete_assignment_unknown_id_returns_none() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Kept", teacher.id)
+
+    assert s.delete_assignment(999) is None
+
+    # A failed delete leaves existing data untouched.
+    assert s.get_assignment(assignment.id) == assignment
+
+
+def test_delete_assignment_twice_returns_none() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Doomed", teacher.id)
+    assert s.delete_assignment(assignment.id) == assignment.id
+    assert s.delete_assignment(assignment.id) is None
+
+
+def test_delete_assignment_preserves_other_assignments() -> None:
+    s = _storage()
+    teacher, _ = _users(s)
+    doomed = s.create_assignment("Doomed", teacher.id)
+    kept = s.create_assignment("Kept", teacher.id)
+    doomed_task = s.create_task(_task(text="doomed"))
+    kept_task = s.create_task(_task(text="kept"))
+    s.add_task_to_assignment(doomed.id, doomed_task.id)
+    s.add_task_to_assignment(kept.id, kept_task.id)
+
+    s.delete_assignment(doomed.id)
+
+    assert s.get_assignment(doomed.id) is None
+    assert s.get_task(doomed_task.id) is None
+    kept_after = s.get_assignment(kept.id)
+    assert kept_after is not None
+    assert [t.text for t in kept_after.tasks] == ["kept"]
+    assert s.get_task(kept_task.id) is not None
+
+
+def test_delete_assignment_keeps_task_shared_with_another_assignment() -> None:
+    """A task still referenced by a surviving assignment must not be deleted."""
+    s = _storage()
+    teacher, _ = _users(s)
+    first = s.create_assignment("First", teacher.id)
+    second = s.create_assignment("Second", teacher.id)
+    shared = s.create_task(_task(text="shared"))
+    s.add_task_to_assignment(first.id, shared.id)
+    s.add_task_to_assignment(second.id, shared.id)
+
+    s.delete_assignment(first.id)
+
+    assert s.get_task(shared.id) is not None
+    assert [t.text for t in s.list_assignment_tasks(second.id)] == ["shared"]
 
 
 # --- attempts -----------------------------------------------------------------

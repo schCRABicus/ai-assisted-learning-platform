@@ -21,6 +21,7 @@ from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,
     AttemptResult,
+    LazyTaskList,
     Role,
     RoleName,
     Task,
@@ -438,16 +439,30 @@ class SqliteStorage(Storage):
                 "SELECT * FROM assignments WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
             self._conn.commit()
-        return Assignment(**dict(row))
+        return Assignment(
+            **dict(row),
+            tasks=LazyTaskList(
+                0, lambda aid=row["id"]: self.list_assignment_tasks(aid)
+            ),
+        )
 
     def get_assignment(self, assignment_id: int) -> Assignment | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM assignments WHERE id = ?", (assignment_id,)
+                "SELECT a.*,"
+                " (SELECT COUNT(*) FROM assignment_tasks at"
+                "  WHERE at.assignment_id = a.id) AS task_count"
+                " FROM assignments a WHERE a.id = ?",
+                (assignment_id,),
             ).fetchone()
         if row is None:
             return None
-        return Assignment(**dict(row))
+        return Assignment(
+            **dict(row),
+            tasks=LazyTaskList(
+                row["task_count"], lambda aid=row["id"]: self.list_assignment_tasks(aid)
+            ),
+        )
 
     def list_assignments(
         self,
@@ -455,21 +470,78 @@ class SqliteStorage(Storage):
         created_by: int | None = None,
         assigned_to: int | None = None,
     ) -> list[Assignment]:
-        sql = "SELECT * FROM assignments"
+        sql = (
+            "SELECT a.*,"
+            " (SELECT COUNT(*) FROM assignment_tasks at"
+            "  WHERE at.assignment_id = a.id) AS task_count"
+            " FROM assignments a"
+        )
         clauses: list[str] = []
         params: list[object] = []
         if created_by is not None:
-            clauses.append("created_by = ?")
+            clauses.append("a.created_by = ?")
             params.append(created_by)
         if assigned_to is not None:
-            clauses.append("assigned_to = ?")
+            clauses.append("a.assigned_to = ?")
             params.append(assigned_to)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY id"
+        sql += " ORDER BY a.id"
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
-        return [Assignment(**dict(r)) for r in rows]
+        return [
+            Assignment(
+                **dict(r),
+                tasks=LazyTaskList(
+                    r["task_count"], lambda aid=r["id"]: self.list_assignment_tasks(aid)
+                ),
+            )
+            for r in rows
+        ]
+
+    def delete_assignment(self, assignment_id: int) -> None:
+        """Delete an assignment, its link rows, and the tasks that belonged only to it.
+
+        A task still referenced by another assignment survives the cascade.
+        Raises ``ValueError`` when no assignment with ``assignment_id`` exists.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM assignments WHERE id = ?", (assignment_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No assignment with id {assignment_id}")
+
+            task_ids = [
+                r["task_id"]
+                for r in self._conn.execute(
+                    "SELECT task_id FROM assignment_tasks WHERE assignment_id = ?",
+                    (assignment_id,),
+                ).fetchall()
+            ]
+
+            # Drop this assignment's links first so the task delete below never
+            # trips on its own link rows (works with RESTRICT or CASCADE FKs).
+            self._conn.execute(
+                "DELETE FROM assignment_tasks WHERE assignment_id = ?",
+                (assignment_id,),
+            )
+
+            # Delete the tasks that were exclusively this assignment's; a task
+            # still referenced by another assignment must survive.
+            if task_ids:
+                placeholders = ", ".join("?" * len(task_ids))
+                self._conn.execute(
+                    f"DELETE FROM tasks WHERE id IN ({placeholders})"
+                    " AND NOT EXISTS (SELECT 1 FROM assignment_tasks at2"
+                    " WHERE at2.task_id = tasks.id)",
+                    task_ids,
+                )
+
+            self._conn.execute(
+                "DELETE FROM assignments WHERE id = ?", (assignment_id,)
+            )
+            self._conn.commit()
 
     def add_task_to_assignment(
         self,

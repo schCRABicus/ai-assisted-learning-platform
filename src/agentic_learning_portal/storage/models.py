@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Callable, Iterator, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentic_learning_portal.api.model import GeneratedTask
 
@@ -45,8 +45,63 @@ class Task(GeneratedTask):
     id: int = Field(..., description="Storage id of the task.")
 
 
+class LazyTaskList:
+    """A list-like adapter over an assignment's tasks.
+
+    The number of tasks (``size``) is known up front — storage joins the task
+    count when loading an assignment — but the task contents themselves are
+    fetched lazily on first content access (iteration or indexing) and cached
+    thereafter. Reading ``len()`` / ``size`` never triggers a fetch.
+    """
+
+    def __init__(self, size: int, loader: Callable[[], list[Task]]) -> None:
+        self._size = size
+        self._loader = loader
+        self._items: list[Task] | None = None
+
+    @property
+    def size(self) -> int:
+        """The known task count; never triggers a fetch."""
+        return self._size
+
+    @property
+    def loaded(self) -> bool:
+        """Whether the task contents have been fetched yet."""
+        return self._items is not None
+
+    def __len__(self) -> int:
+        return self._size
+
+    def __iter__(self) -> Iterator[Task]:
+        return iter(self._load())
+
+    def __getitem__(self, index: int | slice) -> Task | list[Task]:
+        return self._load()[index]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, LazyTaskList):
+            return NotImplemented
+        if self._size != other._size:
+            return False
+        if self._size == 0:
+            return True
+        return self._load() == other._load()
+
+    def _load(self) -> list[Task]:
+        if self._items is None:
+            self._items = self._loader()
+        return self._items
+
+
 class Assignment(BaseModel):
-    """A collection of tasks assigned to a student."""
+    """A collection of tasks assigned to a student.
+
+    ``tasks`` is a :class:`LazyTaskList`: its ``size`` is the assignment's task
+    count (joined in when loading), while the task contents are fetched on
+    first content access. A freshly created assignment has size 0.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: int = Field(..., description="Assignment id.")
     title: str = Field(..., description="Human-readable title.")
@@ -56,6 +111,10 @@ class Assignment(BaseModel):
         description="Id of the student the assignment targets, if any.",
     )
     created_at: str = Field(..., description="UTC ISO-8601 creation timestamp.")
+    tasks: LazyTaskList = Field(
+        default_factory=lambda: LazyTaskList(0, lambda: []),
+        description="Lazily-loaded task list; size known up front, contents on first access.",
+    )
 
 
 class Attempt(BaseModel):

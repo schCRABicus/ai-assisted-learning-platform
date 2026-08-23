@@ -11,6 +11,7 @@ from agentic_learning_portal.storage.models import (
     Assignment,
     Attempt,
     AttemptResult,
+    LazyTaskList,
     Role,
     RoleName,
     Task,
@@ -302,11 +303,24 @@ class InMemoryStorage(Storage):
                 created_at=_now(),
             )
             self._assignments[assignment_id] = assignment
-            return assignment
+        return self._with_tasks(assignment)
+
+    def _with_tasks(self, assignment: Assignment) -> Assignment:
+        """Return ``assignment`` with a fresh lazy ``tasks`` adapter."""
+        with self._lock:
+            count = len(self._assignment_tasks.get(assignment.id, []))
+        return assignment.model_copy(
+            update={
+                "tasks": LazyTaskList(
+                    count, lambda aid=assignment.id: self.list_assignment_tasks(aid)
+                )
+            }
+        )
 
     def get_assignment(self, assignment_id: int) -> Assignment | None:
         with self._lock:
-            return self._assignments.get(assignment_id)
+            assignment = self._assignments.get(assignment_id)
+        return self._with_tasks(assignment) if assignment is not None else None
 
     def list_assignments(
         self,
@@ -320,7 +334,28 @@ class InMemoryStorage(Storage):
                 assignments = [a for a in assignments if a.created_by == created_by]
             if assigned_to is not None:
                 assignments = [a for a in assignments if a.assigned_to == assigned_to]
-            return assignments
+        return [self._with_tasks(a) for a in assignments]
+
+
+    def _assignments_with_task(self, task_id: int) -> list[int] | None:
+        with self._lock:
+            return [assignment_id for assignment_id, tasks in self._assignment_tasks.items() if task_id in map(lambda pair: pair[1], tasks)]
+
+    def delete_assignment(self, assignment_id: int) -> None:
+        with self._lock:
+            if not assignment_id in self._assignments:
+                return None
+
+            del self._assignments[assignment_id]
+
+            if assignment_id in self._assignment_tasks:
+                assignment_task_ids = [task_id for _, task_id in self._assignment_tasks[assignment_id]]
+                for task_id in assignment_task_ids:
+                    if self._assignments_with_task(task_id) == [assignment_id]:
+                        del self._tasks[task_id]
+                del self._assignment_tasks[assignment_id]
+
+            return assignment_id
 
     def add_task_to_assignment(
         self,
