@@ -25,10 +25,17 @@ from __future__ import annotations
 
 import streamlit as st
 
+from streamlit_cookies_controller import CookieController
+
 from agentic_learning_portal.storage import RoleName, Storage, User
 from agentic_learning_portal.storage.factory import StorageFactory
 
 STORAGE_FACTORY = StorageFactory()
+
+# 1. Initialize the Cookie Controller
+# (Keep this un-cached so it checks on every rerun)
+COOKIE_CONTROLLER = CookieController()
+REMEMBER_ME_COOKIE_NAME = "remember_me_logged_in_user"
 
 
 def get_storage() -> Storage:
@@ -45,7 +52,16 @@ def get_storage() -> Storage:
 
 def current_user() -> User | None:
     """Return the logged-in user for this browser session, or ``None``."""
-    return st.session_state.get("user")
+    if st.session_state.get("user") is not None:
+        return st.session_state.get("user")
+
+    cookie_user = COOKIE_CONTROLLER.get(REMEMBER_ME_COOKIE_NAME)
+    if cookie_user is not None:
+        user = get_storage().get_user(cookie_user)
+        st.session_state["user"] = user
+        return user
+
+    return None
 
 
 def login(username: str, password: str) -> User | None:
@@ -63,6 +79,7 @@ def login(username: str, password: str) -> User | None:
 def logout() -> None:
     """Forget the current user and reload the page."""
     st.session_state.pop("user", None)
+    COOKIE_CONTROLLER.remove(REMEMBER_ME_COOKIE_NAME)
     st.rerun()
 
 
@@ -78,6 +95,7 @@ def render_login_form() -> User | None:
     with st.form("portal_login"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
+        remember_me = st.checkbox("Remember me")
         submitted = st.form_submit_button("Sign in", type="primary")
         if submitted:
             if not username or not password:
@@ -87,6 +105,9 @@ def render_login_form() -> User | None:
             if user is None:
                 st.error("Invalid username or password.")
                 return None
+            if remember_me:
+                # Cache in browser cookies (expires in 7 days)
+                COOKIE_CONTROLLER.set(REMEMBER_ME_COOKIE_NAME, user.id, max_age=7*24*60*60)
             return user
     return None
 

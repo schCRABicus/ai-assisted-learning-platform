@@ -124,6 +124,27 @@ def test_delete_button_opens_dialog_for_the_clicked_assignment(portal_env) -> No
     dialog.assert_called_once_with(a1.id)
 
 
+def test_edit_button_opens_task_creation_dialog_for_the_clicked_assignment(portal_env) -> None:
+    """Each Edit button sets create_task_open and opens the dialog for its assignment.
+
+    Regression guard for the closure-in-loop bug that previously hit Delete:
+    every Edit button must target its own assignment's id.
+    """
+    a1, _, _ = _seed_assignment(title="Alpha")
+    a2, _, _ = _seed_assignment(title="Beta")
+
+    target = "agentic_learning_portal.views.components.modals.create_task_dialog"
+    with patch(target) as dialog:
+        at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+        at.run()
+        _login(at)
+        at.button(key=f"edit_{a2.id}").click().run()
+
+    assert not at.exception
+    dialog.assert_called_once_with(a2.id)
+    assert at.session_state["create_task_open"] == a2.id
+
+
 def _confirm_delete(at: AppTest, assignment_id: int) -> None:
     """Open the delete dialog for ``assignment_id`` and confirm deletion.
 

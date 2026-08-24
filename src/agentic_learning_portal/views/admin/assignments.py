@@ -18,7 +18,10 @@ import streamlit as st
 
 from agentic_learning_portal.auth import get_storage, require_roles
 from agentic_learning_portal.storage import Attempt, Storage
-from agentic_learning_portal.views.components.modals import delete_assignment_dialog
+from agentic_learning_portal.views.components.modals import (
+    create_task_dialog,
+    delete_assignment_dialog,
+)
 
 
 def _format_timestamp(iso: str | None) -> str:
@@ -106,7 +109,9 @@ def render_page() -> None:
                 st.markdown(f"### {assignment.title}")
             with col_edit:
                 if st.button("Edit", key=f"edit_{assignment.id}"):
-                    st.session_state.assignment_edited = assignment.id
+                    # Opens the shared task-creation dialog for this assignment
+                    # (the dialog reads the flag on the next run).
+                    st.session_state.create_task_open = assignment.id
                     st.rerun()
             with col_delete:
                 st.button("Delete", key=f"delete_{assignment.id}", icon=":material/delete:", on_click=lambda aid=assignment.id: delete_assignment_dialog(aid))
@@ -129,6 +134,12 @@ def render_page() -> None:
                         st.markdown(f"- **{task.topic}** — {task.complexity}")
                 else:
                     st.markdown("No tasks yet.")
+
+    # The task-creation dialog overlays the page while its open flag is set. It
+    # is called on every run so it survives its own poll-loop reruns; the dialog
+    # closes itself by clearing the flag when the task is saved or canceled.
+    if st.session_state.get("create_task_open") is not None:
+        create_task_dialog(st.session_state["create_task_open"])
 
 
 render_page()

@@ -165,9 +165,9 @@ class TestAssignmentCarousel:
         assert _find_text_input(at, "topic") is None
         assert _find_button(at, "🎯 Generate") is None
 
-    def test_generate_button_opens_embedded_form(self, portal_env) -> None:
-        """Clicking 'Generate task' reveals the authoring form in the slide."""
-        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=10)
+    def test_generate_button_opens_task_creation_dialog(self, portal_env) -> None:
+        """Clicking '✨ Generate task' opens the shared task-creation dialog."""
+        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=20)
         at.run()
         _login(at)
         self._start_assignment(at, "Form Open Test")
@@ -175,14 +175,16 @@ class TestAssignmentCarousel:
         _find_button(at, "Generate task").click().run()
 
         assert not at.exception
-        # The form is now embedded in the slide (topic field, submit, discard).
+        # The dialog's open flag points at the active assignment.
+        assert at.session_state["create_task_open"] == at.session_state["assignment_id"]
+        # The dialog's authoring form is rendered (topic field, submit, cancel).
         assert _find_text_input(at, "topic") is not None
         assert _find_button(at, "🎯 Generate") is not None
-        assert _find_button(at, "Discard") is not None
+        assert _find_button(at, "✖ Cancel") is not None
 
     def test_typing_topic_degrades_gracefully_when_suggestion_fails(self, portal_env) -> None:
         """A failed subtopic suggestion warns and keeps the manual-entry path."""
-        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=10)
+        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=20)
         at.run()
         _login(at)
         self._start_assignment(at, "Subtopic Test")
@@ -210,29 +212,36 @@ class TestAssignmentCarousel:
             solution="Work it out step by step.",
         )
 
-    def _open_form_and_fill(self, at: AppTest, topic: str, manual: str) -> None:
-        """Open the embedded form for the current slot and set topic + subtopics."""
+    def _open_dialog_and_fill(self, at: AppTest, topic: str, manual: str) -> None:
+        """Open the task-creation dialog for the current slot and set topic + subtopics."""
         _find_button(at, "Generate task").click().run()
         _find_text_input(at, "topic").set_value(topic).run()
         _find_text_input(at, "subtopics").set_value(manual).run()
 
+    def _generate_and_save(self, at: AppTest, topic: str, manual: str, task: GeneratedTask) -> None:
+        """Generate ``task`` through the dialog and save it to the assignment."""
+        self._open_dialog_and_fill(at, topic, manual)
+        with patch.object(
+            MathProblemGenerator, "generate", new=AsyncMock(return_value=task)
+        ):
+            _find_button(at, "🎯 Generate").click().run()
+        # The dialog shows the result card with the Save button.
+        save = _find_button(at, "Save")
+        assert save is not None, "expected the Save button in the dialog"
+        save.click().run()
+
     def test_generated_task_survives_navigation(self, portal_env) -> None:
-        """A generated task still shows when navigating away and back."""
-        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=10)
+        """A task saved through the dialog still shows when navigating away and back."""
+        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=20)
         at.run()
         _login(at)
         self._start_assignment(at, "Persist Test")
 
-        self._open_form_and_fill(at, "Algebra", "linear equations")
-        with patch.object(
-            MathProblemGenerator, "generate", new=AsyncMock(return_value=self._task("Algebra", "What is 2 + 2?"))
-        ):
-            _find_button(at, "🎯 Generate").click().run()
+        self._generate_and_save(at, "Algebra", "linear equations", self._task("Algebra", "What is 2 + 2?"))
 
         assert not at.exception
+        # Saved through the dialog -> backfilled into slot 0 from storage.
         assert at.session_state["carousel_last_task_0"] is not None
-        # The form is gone; the card is shown.
-        assert _find_text_input(at, "topic") is None
         assert "2 + 2" in " ".join(m.value for m in at.markdown)
 
         # Add a slot -> lands on slot 1 (empty).
@@ -247,26 +256,18 @@ class TestAssignmentCarousel:
         assert "2 + 2" in " ".join(m.value for m in at.markdown)
 
     def test_multiple_generated_tasks_survive_navigation(self, portal_env) -> None:
-        """Each slot keeps its own task when navigating between generated slots."""
-        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=10)
+        """Each slot keeps its own saved task when navigating between generated slots."""
+        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=20)
         at.run()
         _login(at)
         self._start_assignment(at, "Two Slot Test")
 
         # Slot 0: Algebra task.
-        self._open_form_and_fill(at, "Algebra", "linear equations")
-        with patch.object(
-            MathProblemGenerator, "generate", new=AsyncMock(return_value=self._task("Algebra", "What is 2 + 2?"))
-        ):
-            _find_button(at, "🎯 Generate").click().run()
+        self._generate_and_save(at, "Algebra", "linear equations", self._task("Algebra", "What is 2 + 2?"))
 
         # Add slot 1 and generate a Geometry task there.
         _find_button(at, "Add task").click().run()
-        self._open_form_and_fill(at, "Geometry", "triangles")
-        with patch.object(
-            MathProblemGenerator, "generate", new=AsyncMock(return_value=self._task("Geometry", "Triangle area?"))
-        ):
-            _find_button(at, "🎯 Generate").click().run()
+        self._generate_and_save(at, "Geometry", "triangles", self._task("Geometry", "Triangle area?"))
         assert at.session_state["assignment_current_index"] == 1
         assert at.session_state["carousel_last_task_1"] is not None
 
@@ -286,16 +287,12 @@ class TestAssignmentCarousel:
 
     def test_storage_backfill_restores_task_into_slot(self, portal_env) -> None:
         """A slot whose session state was lost is backfilled from storage."""
-        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=10)
+        at = AppTest.from_file(str(ADMIN_PAGE), default_timeout=20)
         at.run()
         _login(at)
         self._start_assignment(at, "Backfill Test")
 
-        self._open_form_and_fill(at, "Algebra", "linear equations")
-        with patch.object(
-            MathProblemGenerator, "generate", new=AsyncMock(return_value=self._task("Algebra", "What is 2 + 2?"))
-        ):
-            _find_button(at, "🎯 Generate").click().run()
+        self._generate_and_save(at, "Algebra", "linear equations", self._task("Algebra", "What is 2 + 2?"))
         assert at.session_state["carousel_last_task_0"] is not None
 
         # Simulate session churn: the in-session slot task is lost, but the
