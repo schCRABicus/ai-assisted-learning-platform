@@ -22,12 +22,6 @@ from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.auth import current_user, get_storage, require_roles
 from agentic_learning_portal.views.components.modals import create_task_dialog
 
-# Gate the page before any widget (task generation must never run for
-# unauthenticated visitors).
-require_roles("admin", "teacher")
-
-st.title("🎓 Task Generation Admin")
-
 
 # --- assignment carousel helpers ---------------------------------------------------
 
@@ -136,125 +130,133 @@ user = current_user()
 
 # --- landing: create an assignment ------------------------------------------------
 
-if not st.session_state["assignment_active"]:
-    st.subheader("🎯 Create an assignment")
-    st.caption(
-        "Name an assignment, then author its tasks one at a time in a carousel — "
-        "each generated task is saved to the assignment automatically."
-    )
-    col_title, col_add = st.columns([3, 1], vertical_alignment="center")
-    with col_title:
-        assignment_title_input = st.text_input(
-            "Assignment title",
-            key="assignment_title_input",
-            placeholder="e.g. Week 3 Algebra Practice",
-            help="Group generated tasks into an assignment.",
+# Gate the page before any widget (task generation must never run for
+# unauthenticated visitors).
+@require_roles("admin", "teacher")
+def render_page() -> None:
+    st.title("🎓 Task Generation Admin")
+
+    if not st.session_state["assignment_active"]:
+        st.subheader("🎯 Create an assignment")
+        st.caption(
+            "Name an assignment, then author its tasks one at a time in a carousel — "
+            "each generated task is saved to the assignment automatically."
         )
-    with col_add:
+        col_title, col_add = st.columns([3, 1], vertical_alignment="center")
+        with col_title:
+            assignment_title_input = st.text_input(
+                "Assignment title",
+                key="assignment_title_input",
+                placeholder="e.g. Week 3 Algebra Practice",
+                help="Group generated tasks into an assignment.",
+            )
+        with col_add:
+            if st.button(
+                "➕ Add assignment",
+                type="primary",
+                disabled=not assignment_title_input.strip(),
+                use_container_width=True,
+            ):
+                storage = get_storage()
+                assignment = storage.create_assignment(
+                    title=assignment_title_input.strip(),
+                    created_by=user.id,
+                )
+                st.session_state["assignment_id"] = assignment.id
+                st.session_state["assignment_title"] = assignment.title
+                st.session_state["assignment_active"] = True
+                st.session_state["assignment_task_count"] = 1
+                st.session_state["assignment_current_index"] = 0
+                st.rerun()
+        st.stop()
+
+    # --- carousel mode (an assignment is active) --------------------------------------
+
+    st.markdown(f"### 📝 {st.session_state['assignment_title']}")
+
+    top_cols = st.columns([3, 1, 1])
+    with top_cols[1]:
         if st.button(
-            "➕ Add assignment",
-            type="primary",
-            disabled=not assignment_title_input.strip(),
+            "❌ Cancel assignment",
+            key="carousel_cancel",
             use_container_width=True,
         ):
-            storage = get_storage()
-            assignment = storage.create_assignment(
-                title=assignment_title_input.strip(),
-                created_by=user.id,
-            )
-            st.session_state["assignment_id"] = assignment.id
-            st.session_state["assignment_title"] = assignment.title
-            st.session_state["assignment_active"] = True
-            st.session_state["assignment_task_count"] = 1
-            st.session_state["assignment_current_index"] = 0
+            st.warning("Assignment canceled — its saved tasks stay in storage.")
+            _clear_assignment_state()
             st.rerun()
-    st.stop()
+    with top_cols[2]:
+        if st.button(
+            "🏁 Finish",
+            key="carousel_finish",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.balloons()
+            st.success(
+                f"Assignment **{st.session_state['assignment_title']}** "
+                f"(id={st.session_state['assignment_id']}) complete."
+            )
+            _clear_assignment_state()
+            st.rerun()
 
-# --- carousel mode (an assignment is active) --------------------------------------
+    # Storage is the source of truth: restore any persisted task into its slot
+    # (e.g. one saved through the dialog earlier in this session) before rendering
+    # the slide.
+    _sync_assignment_tasks_from_storage()
 
-st.markdown(f"### 📝 {st.session_state['assignment_title']}")
+    total = st.session_state["assignment_task_count"]
+    idx = st.session_state["assignment_current_index"]
 
-top_cols = st.columns([3, 1, 1])
-with top_cols[1]:
-    if st.button(
-        "❌ Cancel assignment",
-        key="carousel_cancel",
-        use_container_width=True,
-    ):
-        st.warning("Assignment canceled — its saved tasks stay in storage.")
-        _clear_assignment_state()
-        st.rerun()
-with top_cols[2]:
-    if st.button(
-        "🏁 Finish",
-        key="carousel_finish",
-        type="primary",
-        use_container_width=True,
-    ):
-        st.balloons()
-        st.success(
-            f"Assignment **{st.session_state['assignment_title']}** "
-            f"(id={st.session_state['assignment_id']}) complete."
-        )
-        _clear_assignment_state()
-        st.rerun()
+    # Native carousel: the current slide (its content depends on slot state) flanked
+    # by ◀/▶ arrows that are part of the carousel itself, with the "+" to the right.
+    car_col, add_col = st.columns([6, 1], vertical_alignment="center")
+    with car_col:
+        carousel_inner = st.columns([1, 8, 1], vertical_alignment="center")
+        with carousel_inner[0]:
+            if idx > 0:
+                if st.button(
+                    "◀",
+                    key="carousel_prev",
+                    help="Previous task",
+                    use_container_width=True,
+                ):
+                    st.session_state["assignment_current_index"] = idx - 1
+                    st.rerun()
+        with carousel_inner[1]:
+            with st.container(border=True):
+                _render_carousel_slide(idx)
+        with carousel_inner[2]:
+            if idx < total - 1:
+                if st.button(
+                    "▶",
+                    key="carousel_next",
+                    help="Next task",
+                    use_container_width=True,
+                ):
+                    st.session_state["assignment_current_index"] = idx + 1
+                    st.rerun()
+    with add_col:
+        if st.button(
+            "➕ Add task",
+            key="carousel_add",
+            help="Add another task slot to this assignment.",
+            use_container_width=True,
+        ):
+            st.session_state["assignment_task_count"] = total + 1
+            st.session_state["assignment_current_index"] = total
+            st.rerun()
 
-# Storage is the source of truth: restore any persisted task into its slot
-# (e.g. one saved through the dialog earlier in this session) before rendering
-# the slide.
-_sync_assignment_tasks_from_storage()
+    # Position indicator below the carousel: counter + clickable-free dots.
+    st.markdown(f"**Task {idx + 1} of {total}**")
+    dots = "  ".join("●" if i == idx else "○" for i in range(total))
+    st.caption(dots)
 
-total = st.session_state["assignment_task_count"]
-idx = st.session_state["assignment_current_index"]
+    # The task-creation dialog overlays the page while its open flag is set. It is
+    # called on every run so it survives its own poll-loop reruns; the dialog closes
+    # itself by clearing the flag when the task is saved or canceled.
+    if st.session_state.get("create_task_open") is not None:
+        create_task_dialog(st.session_state["create_task_open"])
 
-# Native carousel: the current slide (its content depends on slot state) flanked
-# by ◀/▶ arrows that are part of the carousel itself, with the "+" to the right.
-car_col, add_col = st.columns([6, 1], vertical_alignment="center")
-with car_col:
-    carousel_inner = st.columns([1, 8, 1], vertical_alignment="center")
-    with carousel_inner[0]:
-        if idx > 0:
-            if st.button(
-                "◀",
-                key="carousel_prev",
-                help="Previous task",
-                use_container_width=True,
-            ):
-                st.session_state["assignment_current_index"] = idx - 1
-                st.rerun()
-    with carousel_inner[1]:
-        with st.container(border=True):
-            _render_carousel_slide(idx)
-    with carousel_inner[2]:
-        if idx < total - 1:
-            if st.button(
-                "▶",
-                key="carousel_next",
-                help="Next task",
-                use_container_width=True,
-            ):
-                st.session_state["assignment_current_index"] = idx + 1
-                st.rerun()
-with add_col:
-    if st.button(
-        "➕ Add task",
-        key="carousel_add",
-        help="Add another task slot to this assignment.",
-        use_container_width=True,
-    ):
-        st.session_state["assignment_task_count"] = total + 1
-        st.session_state["assignment_current_index"] = total
-        st.rerun()
+    st.stop()  # Nothing below: the page is assignment-only.
 
-# Position indicator below the carousel: counter + clickable-free dots.
-st.markdown(f"**Task {idx + 1} of {total}**")
-dots = "  ".join("●" if i == idx else "○" for i in range(total))
-st.caption(dots)
-
-# The task-creation dialog overlays the page while its open flag is set. It is
-# called on every run so it survives its own poll-loop reruns; the dialog closes
-# itself by clearing the flag when the task is saved or canceled.
-if st.session_state.get("create_task_open") is not None:
-    create_task_dialog(st.session_state["create_task_open"])
-
-st.stop()  # Nothing below: the page is assignment-only.
+render_page()

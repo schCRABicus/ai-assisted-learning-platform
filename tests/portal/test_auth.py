@@ -21,12 +21,17 @@ def _guarded_page(*roles: str) -> None:
     script, so everything it needs — including ``st`` and ``roles`` — must be
     imported locally or passed via ``from_function(args=...)``.
     """
-    import streamlit as st
 
-    from agentic_learning_portal.auth import require_roles
+    from agentic_learning_portal.auth import require_roles, current_user
 
-    user = require_roles(*roles)
-    st.markdown(f"PAGE_RENDERED as {user.username}")
+    @require_roles(*roles)
+    def page() -> None:
+        import streamlit as st
+
+        user = current_user()
+        st.markdown(f"PAGE_RENDERED as {user.username}")
+
+    return page()
 
 
 def _admin_page() -> AppTest:

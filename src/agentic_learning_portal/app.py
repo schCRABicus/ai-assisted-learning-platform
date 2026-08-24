@@ -29,7 +29,7 @@ admin = st.Page(
     default=True,
 )
 assignments = st.Page(
-    str(PAGES_DIR / "admin/assignments.py"),
+    str(PAGES_DIR / "admin/01_assignments.py"),
     title="Assignments",
     icon="🎓",
     url_path="assignments",

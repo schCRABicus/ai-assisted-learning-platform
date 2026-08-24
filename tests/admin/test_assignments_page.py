@@ -1,4 +1,4 @@
-"""Tests for the assignments overview endpoint (views/admin/assignments.py)."""
+"""Tests for the assignments overview endpoint (views/admin/01_assignments.py)."""
 
 from __future__ import annotations
 
@@ -11,13 +11,17 @@ from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.auth import get_storage
 from unittest.mock import patch
 
-ASSIGNMENTS_PAGE = Path(__file__).resolve().parents[2] / "src" / "agentic_learning_portal" / "views" / "admin" / "assignments.py"
+ASSIGNMENTS_PAGE = Path(__file__).resolve().parents[2] / "src" / "agentic_learning_portal" / "views" / "admin" / "01_assignments.py"
+
+
+def _login_as(at: AppTest, username: str, password: str) -> None:
+    at.text_input[0].set_value(username)
+    at.text_input[1].set_value(password)
+    at.button[0].click().run()
 
 
 def _login(at: AppTest) -> None:
-    at.text_input[0].set_value("boss")
-    at.text_input[1].set_value("hunter2")
-    at.button[0].click().run()
+    _login_as(at, "boss", "hunter2")
 
 
 def _seed_assignment(*, title: str = "Algebra HW", with_attempt: bool = True):
@@ -37,6 +41,64 @@ def _seed_assignment(*, title: str = "Algebra HW", with_attempt: bool = True):
         attempt = storage.complete_attempt(attempt.id)
         return assignment, task, attempt
     return assignment, task, None
+
+
+def test_assignments_page_requires_authentication(portal_env) -> None:
+    """An anonymous visitor sees the login form, never the assignments list."""
+    _seed_assignment(title="Secret HW")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+
+    assert not at.exception
+    # The page is auth-gated: the login form renders and the page stops before
+    # any assignment content (no title, no assignment cards).
+    assert any(t.label == "Username" for t in at.text_input)
+    assert any(t.label == "Password" for t in at.text_input)
+    assert not at.title
+    assert not any("Secret HW" in m.value for m in at.markdown)
+
+
+def test_assignments_page_denies_non_admin_roles(portal_env) -> None:
+    """A signed-in user without the admin/teacher roles is denied the page."""
+    _seed_assignment(title="Secret HW")
+    get_storage().create_user("pupil", "student", password="pw123")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login_as(at, "pupil", "pw123")
+
+    assert not at.exception
+    assert any("Access denied" in e.value for e in at.error)
+    assert not at.title
+    assert not any("Secret HW" in m.value for m in at.markdown)
+
+
+def test_admin_can_access_assignments_page(portal_env) -> None:
+    """The env-seeded admin (boss) sees the assignments list."""
+    _seed_assignment(title="Algebra HW")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login(at)
+
+    assert not at.exception
+    assert at.title[0].value == "🎓 Assignments"
+    assert any("### Algebra HW" in m.value for m in at.markdown)
+
+
+def test_teacher_can_access_assignments_page(portal_env) -> None:
+    """The page also admits the teacher role (require_roles admin|teacher)."""
+    _seed_assignment(title="Geometry HW")
+    get_storage().create_user("tess", "teacher", password="pw123")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login_as(at, "tess", "pw123")
+
+    assert not at.exception
+    assert at.title[0].value == "🎓 Assignments"
+    assert any("### Geometry HW" in m.value for m in at.markdown)
 
 
 def test_assignments_page_shows_empty_state(portal_env) -> None:

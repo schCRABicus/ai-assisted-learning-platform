@@ -76,27 +76,12 @@ def _attempt_score(storage: Storage, attempt: Attempt) -> tuple[int, int, float 
     avg = sum(scores) / len(scores) if scores else None
     return correct, len(graded), avg
 
-# # Define the confirmation pop-up dialog
-# @st.dialog("Confirm Assignment Deletion", dismissible=True)
-# def delete_assignment_dialog(assignment_id: int) -> None:
-#   st.write("Are you sure you want to delete this assignment? This cannot be undone.")
-#
-#   col1, col2 = st.columns(2)
-#
-#   if col1.button("Yes, Delete", type="primary"):
-#     get_storage().delete_assignment(assignment_id)
-#     st.success("Item deleted successfully!")
-#     # st.session_state.show_dialog = False
-#     st.rerun()
-#
-#   if col2.button("Cancel"):
-#     # st.session_state.show_dialog = False
-#     st.rerun()
-
-def render_page() -> None:
-    # Gate the page before any widget — mirrors views/admin.py.
-    require_roles("admin", "teacher")
-
+@require_roles("admin", "teacher")
+def render_assignments_list_page() -> None:
+    """
+    Renders assignments list page with a table of assignments.
+    :return:
+    """
     st.set_page_config(page_title="🎓 Assignments", page_icon="🎓")
 
     st.title("🎓 Assignments")
@@ -161,4 +146,4 @@ def render_page() -> None:
         create_task_dialog(st.session_state["create_task_open"])
 
 
-render_page()
+render_assignments_list_page()

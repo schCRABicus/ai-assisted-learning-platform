@@ -23,6 +23,9 @@ touching any page.
 
 from __future__ import annotations
 
+import functools
+from typing import Callable
+
 import streamlit as st
 
 from streamlit_cookies_controller import CookieController
@@ -133,16 +136,28 @@ def require_roles(*roles: RoleName) -> User:
     so nothing below the guard runs. Returns the authenticated ``User`` on
     success so views can greet/identify them.
     """
-    user = current_user()
-    if user is None:
-        if render_login_form() is not None:
-            st.rerun()
-        st.stop()
-    if roles and not any(role in user.roles for role in roles):
-        st.error(
-            "Access denied — you need one of these roles to view this page: "
-            + ", ".join(roles)
-            + "."
-        )
-        st.stop()
-    return user
+    def require_roles_decorator(func: Callable) -> Callable:
+
+        @functools.wraps(func)
+        def func_wrapper(*args, **kwargs):
+            user = current_user()
+            if user is None:
+                if render_login_form() is not None:
+                    st.rerun()
+                st.stop()
+            if roles and not any(role in user.roles for role in roles):
+                st.error(
+                    "Access denied — you need one of these roles to view this page: "
+                    + ", ".join(roles)
+                    + "."
+                )
+                st.stop()
+
+            result = func(*args, **kwargs)
+
+            return result
+
+        return func_wrapper
+
+    return require_roles_decorator
+
