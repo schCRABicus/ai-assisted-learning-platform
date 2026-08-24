@@ -145,6 +145,39 @@ def test_edit_button_opens_task_creation_dialog_for_the_clicked_assignment(porta
     assert at.session_state["create_task_open"] == a2.id
 
 
+def test_delete_after_edit_opens_only_one_dialog(portal_env) -> None:
+    """Clicking Delete while the task-creation dialog is open must not raise.
+
+    Regression for the "Only one dialog is allowed to be opened at the same
+    time" StreamlitAPIException: the Delete click closes the task-creation
+    dialog (clears its open flag) before opening the delete confirmation, so a
+    single run never invokes two ``st.dialog`` functions.
+    """
+    a1, _, _ = _seed_assignment(title="Doomed")
+
+    create_target = "agentic_learning_portal.views.components.modals.create_task_dialog"
+    delete_target = "agentic_learning_portal.views.components.modals.delete_assignment_dialog"
+    with patch(create_target) as create_dialog, patch(delete_target) as delete_dialog:
+        at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+        at.run()
+        _login(at)
+
+        # Open the task-creation dialog via Edit.
+        at.button(key=f"edit_{a1.id}").click().run()
+        assert at.session_state["create_task_open"] == a1.id
+        create_dialog.assert_called_once_with(a1.id)
+
+        # Now click Delete: the create dialog must close before the delete opens.
+        at.button(key=f"delete_{a1.id}").click().run()
+
+    assert not at.exception
+    # The task-creation dialog was closed (its flag cleared) by the Delete click.
+    assert "create_task_open" not in at.session_state
+    # Exactly one dialog was invoked on the delete run — the delete confirmation.
+    delete_dialog.assert_called_once_with(a1.id)
+    assert create_dialog.call_count == 1
+
+
 def _confirm_delete(at: AppTest, assignment_id: int) -> None:
     """Open the delete dialog for ``assignment_id`` and confirm deletion.
 

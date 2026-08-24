@@ -49,6 +49,24 @@ def _last_attempt(storage: Storage, assignment_id: int) -> Attempt | None:
     return attempts[-1] if attempts else None
 
 
+def _close_task_creation_dialog() -> None:
+    """Drop the task-creation dialog's open flag + state.
+
+    Called from a widget callback (before opening the delete dialog), so it must
+    NOT call ``st.rerun()`` — callbacks run before the script body and rerunning
+    from one raises. Streamlit allows only one ``st.dialog`` open at a time, so
+    clicking Delete has to close the task-creation dialog first.
+    """
+    st.session_state.pop("create_task_open", None)
+    st.session_state.pop("create_task_state", None)
+
+
+def _open_delete_confirmation(aid: int) -> None:
+    """Close the task-creation dialog, then open the delete confirmation for ``aid``."""
+    _close_task_creation_dialog()
+    delete_assignment_dialog(aid)
+
+
 def _attempt_score(storage: Storage, attempt: Attempt) -> tuple[int, int, float | None]:
     """Summarize an attempt's results as ``(correct, graded, average_score)``."""
     results = storage.list_results(attempt_id=attempt.id)
@@ -114,7 +132,8 @@ def render_page() -> None:
                     st.session_state.create_task_open = assignment.id
                     st.rerun()
             with col_delete:
-                st.button("Delete", key=f"delete_{assignment.id}", icon=":material/delete:", on_click=lambda aid=assignment.id: delete_assignment_dialog(aid))
+                st.button("Delete", key=f"delete_{assignment.id}", icon=":material/delete:",
+                          on_click=lambda aid=assignment.id: _open_delete_confirmation(aid))
 
 
             meta_row1 = st.columns(3)
