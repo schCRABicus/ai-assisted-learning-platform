@@ -4,24 +4,24 @@ Served at ``/assignments`` (via ``st.navigation`` in ``app.py``). The page
 lists every assignment in the portal — no owner/student filter — newest first,
 each in a bordered card with its task count, who it's assigned to, who created
 it, and the metadata of its latest attempt (when it was last attempted, the
-graded score, and whether it is still in progress). Purely read-only over
-storage: no LLM calls, no threading, no session state. Task counts come from
-each assignment's joined ``tasks.size``; task contents are fetched lazily
-through the ``LazyTaskList`` adapter on first access (inside the expander).
+graded score, and whether it is still in progress). No LLM calls, no threading.
+The **Edit** button on a card navigates to the assignment editor page
+(``02_assignment_editor.py``), passing the assignment id through session state;
+**Delete** opens a confirmation dialog. Task counts come from each assignment's
+joined ``tasks.size``; task contents are fetched lazily through the
+``LazyTaskList`` adapter on first access (inside the expander).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
 from agentic_learning_portal.auth import get_storage, require_roles
 from agentic_learning_portal.storage import Attempt, Storage
-from agentic_learning_portal.views.components.modals import (
-    create_task_dialog,
-    delete_assignment_dialog,
-)
+from agentic_learning_portal.views.components.modals import delete_assignment_dialog
 
 
 def _format_timestamp(iso: str | None) -> str:
@@ -49,21 +49,8 @@ def _last_attempt(storage: Storage, assignment_id: int) -> Attempt | None:
     return attempts[-1] if attempts else None
 
 
-def _close_task_creation_dialog() -> None:
-    """Drop the task-creation dialog's open flag + state.
-
-    Called from a widget callback (before opening the delete dialog), so it must
-    NOT call ``st.rerun()`` — callbacks run before the script body and rerunning
-    from one raises. Streamlit allows only one ``st.dialog`` open at a time, so
-    clicking Delete has to close the task-creation dialog first.
-    """
-    st.session_state.pop("create_task_open", None)
-    st.session_state.pop("create_task_state", None)
-
-
 def _open_delete_confirmation(aid: int) -> None:
-    """Close the task-creation dialog, then open the delete confirmation for ``aid``."""
-    _close_task_creation_dialog()
+    """Open the delete confirmation dialog for ``aid``."""
     delete_assignment_dialog(aid)
 
 
@@ -112,10 +99,12 @@ def render_assignments_list_page() -> None:
                 st.markdown(f"### {assignment.title}")
             with col_edit:
                 if st.button("Edit", key=f"edit_{assignment.id}"):
-                    # Opens the shared task-creation dialog for this assignment
-                    # (the dialog reads the flag on the next run).
-                    st.session_state.create_task_open = assignment.id
-                    st.rerun()
+                    # Navigate to the assignment editor, passing the id through
+                    # session state (it survives the st.switch_page).
+                    st.session_state.edit_assignment_id = assignment.id
+                    st.switch_page(
+                        str(Path(__file__).parent / "02_assignment_editor.py")
+                    )
             with col_delete:
                 st.button("Delete", key=f"delete_{assignment.id}", icon=":material/delete:",
                           on_click=lambda aid=assignment.id: _open_delete_confirmation(aid))
@@ -138,12 +127,6 @@ def render_assignments_list_page() -> None:
                         st.markdown(f"- **{task.topic}** — {task.complexity}")
                 else:
                     st.markdown("No tasks yet.")
-
-    # The task-creation dialog overlays the page while its open flag is set. It
-    # is called on every run so it survives its own poll-loop reruns; the dialog
-    # closes itself by clearing the flag when the task is saved or canceled.
-    if st.session_state.get("create_task_open") is not None:
-        create_task_dialog(st.session_state["create_task_open"])
 
 
 render_assignments_list_page()

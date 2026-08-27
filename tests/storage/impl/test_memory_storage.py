@@ -237,6 +237,49 @@ def test_get_task_returns_none_for_missing() -> None:
     assert s.get_task(999) is None
 
 
+def test_update_task_updates_all_fields() -> None:
+    s = _storage()
+    task = s.create_task(_task(correct_answer=12))
+
+    updated = s.update_task(
+        task.id,
+        topic="Fractions",
+        text="What is 3/4 of 20?",
+        complexity="hard",
+        correct_answer=15,
+        solution="Three quarters of 20 is 15.",
+    )
+
+    assert updated.topic == "Fractions"
+    assert updated.text == "What is 3/4 of 20?"
+    assert updated.complexity == "hard"
+    # Numeric answers come back coerced to their original type.
+    assert updated.correct_answer == 15
+    assert updated.solution == "Three quarters of 20 is 15."
+    # The change is persisted, not just returned.
+    assert s.get_task(task.id) == updated
+
+
+def test_update_task_partial_update_keeps_other_fields() -> None:
+    s = _storage()
+    task = s.create_task(_task(correct_answer="12"))
+
+    updated = s.update_task(task.id, topic="Algebra")
+
+    assert updated.topic == "Algebra"
+    assert updated.text == task.text
+    assert updated.complexity == task.complexity
+    assert updated.correct_answer == task.correct_answer
+    assert updated.solution == task.solution
+
+
+def test_update_task_missing_id_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No task with id 999"):
+        s.update_task(999, topic="Arithmetic")
+
+
 # --- assignments -------------------------------------------------------------
 
 
@@ -514,6 +557,75 @@ def test_delete_assignment_keeps_task_shared_with_another_assignment() -> None:
 
     assert s.get_task(shared.id) is not None
     assert [t.text for t in s.list_assignment_tasks(second.id)] == ["shared"]
+
+
+def test_remove_task_from_assignment_unlinks_and_deletes_unshared() -> None:
+    """Removing a task deletes it when no other assignment references it."""
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Algebra HW", teacher.id)
+    task = s.create_task(_task())
+    s.add_task_to_assignment(assignment.id, task.id)
+
+    s.remove_task_from_assignment(assignment.id, task.id)
+
+    assert s.list_assignment_tasks(assignment.id) == []
+    assert s.get_task(task.id) is None
+
+
+def test_remove_task_from_assignment_keeps_task_shared_with_another_assignment() -> None:
+    """A task still referenced by a surviving assignment must not be deleted."""
+    s = _storage()
+    teacher, _ = _users(s)
+    first = s.create_assignment("First", teacher.id)
+    second = s.create_assignment("Second", teacher.id)
+    shared = s.create_task(_task(text="shared"))
+    s.add_task_to_assignment(first.id, shared.id)
+    s.add_task_to_assignment(second.id, shared.id)
+
+    s.remove_task_from_assignment(first.id, shared.id)
+
+    assert s.get_task(shared.id) is not None
+    assert s.list_assignment_tasks(first.id) == []
+    assert [t.text for t in s.list_assignment_tasks(second.id)] == ["shared"]
+
+
+def test_remove_task_from_assignment_leaves_other_tasks() -> None:
+    """Removing one task of an assignment leaves the others in place."""
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Algebra HW", teacher.id)
+    t1 = s.create_task(_task(text="first"))
+    t2 = s.create_task(_task(text="second"))
+    s.add_task_to_assignment(assignment.id, t1.id)
+    s.add_task_to_assignment(assignment.id, t2.id)
+
+    s.remove_task_from_assignment(assignment.id, t1.id)
+
+    assert [t.text for t in s.list_assignment_tasks(assignment.id)] == ["second"]
+    assert s.get_task(t1.id) is None
+    assert s.get_task(t2.id) is not None
+
+
+def test_remove_task_not_in_assignment_raises() -> None:
+    """A task that was never linked to the assignment is a no-op error."""
+    s = _storage()
+    teacher, _ = _users(s)
+    assignment = s.create_assignment("Algebra HW", teacher.id)
+    task = s.create_task(_task())
+
+    with pytest.raises(ValueError, match="not in assignment"):
+        s.remove_task_from_assignment(assignment.id, task.id)
+
+    # Nothing changed.
+    assert s.get_task(task.id) is not None
+
+
+def test_remove_task_from_missing_assignment_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No assignment"):
+        s.remove_task_from_assignment(999, 1)
 
 
 # --- attempts -----------------------------------------------------------------

@@ -280,6 +280,38 @@ class InMemoryStorage(Storage):
                 self._parse_stored_task(t) for t in sorted(self._tasks.values(), key=lambda t: t.id)
             ]
 
+    def update_task(
+        self,
+        task_id: int,
+        *,
+        topic: str | None = None,
+        text: str | None = None,
+        complexity: str | None = None,
+        correct_answer: str | int | float | None = None,
+        solution: str | None = None,
+    ) -> Task:
+        """Update the editable fields of an existing task and return it.
+
+        Only the fields given are changed; ``None`` leaves a field untouched.
+        Raises ``ValueError`` when no task with ``task_id`` exists.
+        """
+        with self._lock:
+            stored = self._get_task(task_id)
+            changes: dict[str, object] = {}
+            if topic is not None:
+                changes["topic"] = topic
+            if text is not None:
+                changes["text"] = text
+            if complexity is not None:
+                changes["complexity"] = complexity
+            if correct_answer is not None:
+                changes["correct_answer"] = str(correct_answer)
+            if solution is not None:
+                changes["solution"] = solution
+            updated = stored.model_copy(update=changes)
+            self._tasks[task_id] = updated
+            return self._parse_stored_task(updated)
+
     # --- assignments ---------------------------------------------------------
 
     def create_assignment(
@@ -381,6 +413,24 @@ class InMemoryStorage(Storage):
                 key=lambda pair: (pair[0], pair[1]),
             )
             return [self._parse_stored_task(self._get_task(t)) for _, t in links]
+
+    def remove_task_from_assignment(self, assignment_id: int, task_id: int) -> None:
+        """Unlink ``task_id`` from ``assignment_id``'s task list.
+
+        The task is deleted when no other assignment references it (mirroring
+        ``delete_assignment``'s shared-task semantics). Raises ``ValueError``
+        when the assignment is missing or the task is not part of it.
+        """
+        with self._lock:
+            self._get_assignment(assignment_id)
+            links = self._assignment_tasks.get(assignment_id, [])
+            if not any(t == task_id for _, t in links):
+                raise ValueError(f"Task {task_id} not in assignment {assignment_id}")
+            self._assignment_tasks[assignment_id] = [
+                (p, t) for p, t in links if t != task_id
+            ]
+            if not self._assignments_with_task(task_id):
+                del self._tasks[task_id]
 
     # --- attempts ------------------------------------------------------------
 

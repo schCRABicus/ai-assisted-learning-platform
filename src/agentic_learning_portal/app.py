@@ -35,6 +35,14 @@ assignments = st.Page(
     url_path="assignments",
     default=False,
 )
+assignment_editor = st.Page(
+    str(PAGES_DIR / "admin/02_assignment_editor.py"),
+    title="Assignment Editor",
+    icon="✏️",
+    url_path="assignment_editor",
+    default=False,
+    visibility="hidden",
+)
 student = st.Page(
     str(PAGES_DIR / "student.py"),
     title="Student",
@@ -47,7 +55,7 @@ student = st.Page(
 render_sidebar_user()
 
 pg = st.navigation({
-    "Admin": [admin, assignments],
+    "Admin": [admin, assignments, assignment_editor],
     "Student": [student]
 })
 pg.run()

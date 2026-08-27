@@ -420,6 +420,46 @@ class SqliteStorage(Storage):
             ).fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    def update_task(
+        self,
+        task_id: int,
+        *,
+        topic: str | None = None,
+        text: str | None = None,
+        complexity: str | None = None,
+        correct_answer: str | int | float | None = None,
+        solution: str | None = None,
+    ) -> Task:
+        """Update the editable fields of an existing task and return it.
+
+        Only the fields given are changed; ``None`` leaves a field untouched.
+        Raises ``ValueError`` when no task with ``task_id`` exists.
+        """
+        with self._lock:
+            current = self._conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"No task with id {task_id}")
+            self._conn.execute(
+                "UPDATE tasks SET topic = ?, text = ?, complexity = ?,"
+                " correct_answer = ?, solution = ? WHERE id = ?",
+                (
+                    current["topic"] if topic is None else topic,
+                    current["text"] if text is None else text,
+                    current["complexity"] if complexity is None else complexity,
+                    current["correct_answer"]
+                    if correct_answer is None else str(correct_answer),
+                    current["solution"] if solution is None else solution,
+                    task_id,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            self._conn.commit()
+        return self._row_to_task(row)
+
     # --- assignments ---------------------------------------------------------
 
     def create_assignment(
@@ -575,6 +615,40 @@ class SqliteStorage(Storage):
                 (assignment_id,),
             ).fetchall()
         return [self._row_to_task(r) for r in rows]
+
+    def remove_task_from_assignment(self, assignment_id: int, task_id: int) -> None:
+        """Unlink ``task_id`` from ``assignment_id``'s task list.
+
+        The task is deleted when no other assignment references it (mirroring
+        ``delete_assignment``'s shared-task semantics). Raises ``ValueError``
+        when the assignment is missing or the task is not part of it.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM assignments WHERE id = ?", (assignment_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No assignment with id {assignment_id}")
+
+            link = self._conn.execute(
+                "SELECT task_id FROM assignment_tasks"
+                " WHERE assignment_id = ? AND task_id = ?",
+                (assignment_id, task_id),
+            ).fetchone()
+            if link is None:
+                raise ValueError(f"Task {task_id} not in assignment {assignment_id}")
+
+            self._conn.execute(
+                "DELETE FROM assignment_tasks WHERE assignment_id = ? AND task_id = ?",
+                (assignment_id, task_id),
+            )
+            # Delete the task only when no other assignment references it.
+            self._conn.execute(
+                "DELETE FROM tasks WHERE id = ? AND NOT EXISTS"
+                " (SELECT 1 FROM assignment_tasks at2 WHERE at2.task_id = tasks.id)",
+                (task_id,),
+            )
+            self._conn.commit()
 
     # --- attempts ------------------------------------------------------------
 

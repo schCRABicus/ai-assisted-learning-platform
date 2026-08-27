@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Literal, Sequence
 
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.storage.models import (
@@ -93,6 +93,23 @@ class Storage(ABC):
     def list_tasks(self) -> list[Task]:
         """Return all persisted tasks."""
 
+    @abstractmethod
+    def update_task(
+        self,
+        task_id: int,
+        *,
+        topic: str | None = None,
+        text: str | None = None,
+        complexity: Literal["easy", "medium", "hard"] | None = None,
+        correct_answer: str | int | float | None = None,
+        solution: str | None = None,
+    ) -> Task:
+        """Update the editable fields of an existing task and return the updated task.
+
+        Only the fields given are changed; ``None`` leaves a field untouched.
+        Raises ``ValueError`` when no task with ``task_id`` exists.
+        """
+
     # --- assignments ---------------------------------------------------------
 
     @abstractmethod
@@ -149,6 +166,15 @@ class Storage(ABC):
     @abstractmethod
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         """Return the tasks of an assignment in order."""
+
+    @abstractmethod
+    def remove_task_from_assignment(self, assignment_id: int, task_id: int) -> None:
+        """Unlink ``task_id`` from ``assignment_id``'s task list.
+
+        The task itself is deleted when no other assignment references it; a task
+        still shared by another assignment survives. Raises ``ValueError`` when
+        the assignment is missing or the task is not part of the assignment.
+        """
 
     # --- attempts ------------------------------------------------------------
 
