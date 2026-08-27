@@ -1,16 +1,14 @@
-"""Shared dialogs for the portal pages (views/components/modals.py).
+"""The task-authoring dialog (views/components/create_task_dialog.py).
 
-Every dialog is a Streamlit ``st.dialog`` function opened by a page through a
-session-state flag: the delete-assignment confirmation dialog, the task-authoring
-:func:`create_task_dialog`, :func:`edit_task_dialog`, and
-:func:`remove_task_dialog`. The opener sets the flag to the relevant id and
-re-calls the dialog function on every run while the flag is set, so the dialog
+:func:`create_task_dialog` is a Streamlit ``st.dialog`` opened by a page through
+the ``create_task_open`` session-state flag: the page sets the flag to the
+assignment id and re-calls the dialog on every run while it's set, so the dialog
 survives the ``st.rerun()`` calls it makes (e.g. the live progress poll loop).
-Only one dialog may be open per run (Streamlit's limit), so pages dispatch the
-dialogs mutually-exclusively and each dialog clears its own flag when done.
+Used by the Admin page (``views/admin.py``) and the assignment editor
+(``views/admin/02_assignment_editor.py``).
 
-:func:`create_task_dialog` is a small phase machine over a single session-state
-dict (``create_task_state``): the authoring form, a live progress panel while
+The dialog is a small phase machine over a single session-state dict
+(``create_task_state``): the authoring form, a live progress panel while
 generation runs in a background thread (a :class:`CollectingProgressListener`
 appends events to the state's ``log``), then either the finished task card with
 a Save button or an error with a retry. Saving persists the task via storage and
@@ -71,24 +69,6 @@ def get_storage() -> Storage:
     start); the memory backend is a single shared instance.
     """
     return STORAGE_FACTORY.get_storage()
-
-
-# Define the confirmation pop-up dialog
-@st.dialog("Confirm Assignment Deletion", dismissible=True)
-def delete_assignment_dialog(assignment_id: int) -> None:
-    st.write("Are you sure you want to delete this assignment? This cannot be undone.")
-
-    col1, col2 = st.columns(2)
-
-    if col1.button("Yes, Delete", type="primary"):
-      get_storage().delete_assignment(assignment_id)
-      st.success("Item deleted successfully!")
-      # st.session_state.show_dialog = False
-      st.rerun()
-
-    if col2.button("Cancel"):
-      # st.session_state.show_dialog = False
-      st.rerun()
 
 
 @st.cache_data
@@ -371,107 +351,3 @@ def create_task_dialog(assignment_id: int) -> None:
         return
     _render_create_task_form(assignment_id, state)
 
-
-def _close_edit_task_dialog() -> None:
-    """Close the edit-task dialog (drops its open flag) and rerun."""
-    st.session_state.pop("edit_task_open", None)
-    st.rerun()
-
-
-def _close_remove_task_dialog() -> None:
-    """Close the remove-task dialog (drops its open flag) and rerun."""
-    st.session_state.pop("remove_task_open", None)
-    st.rerun()
-
-
-@st.dialog("Remove Task", dismissible=True)
-def remove_task_dialog(assignment_id: int, task_id: int) -> None:
-    """Confirm removing ``task_id`` from ``assignment_id`` in a modal dialog.
-
-    Confirming calls ``storage.remove_task_from_assignment`` (which unlinks the
-    task and deletes it only when no other assignment references it); Cancel
-    leaves the assignment untouched. Opened by a page through the
-    ``remove_task_open`` session-state flag.
-    """
-    storage = get_storage()
-    task = storage.get_task(task_id)
-    label = f"'{task.topic}'" if task is not None else f"task #{task_id}"
-    st.write(
-        f"Remove **{label}** from this assignment? "
-        "The task is deleted when no other assignment uses it."
-    )
-
-    col_remove, col_cancel = st.columns(2)
-    if col_remove.button("🗑 Remove", type="primary", key="remove_task_confirm"):
-        storage.remove_task_from_assignment(assignment_id, task_id)
-        st.success("Task removed.")
-        _close_remove_task_dialog()
-    if col_cancel.button("✖ Cancel", key="remove_task_cancel"):
-        _close_remove_task_dialog()
-
-
-@st.dialog("Edit Task", dismissible=True)
-def edit_task_dialog(task_id: int) -> None:
-    """Edit an existing task's fields in a modal dialog.
-
-    Reads the task fresh from storage on every open and shows its current
-    fields pre-populated; Save persists the changes via
-    ``storage.update_task``, Cancel leaves the task untouched. Opened by a
-    page through the ``edit_task_open`` session-state flag.
-    """
-    storage = get_storage()
-    task = storage.get_task(task_id)
-    if task is None:
-        st.error(f"Task #{task_id} not found.")
-        if st.button("✖ Close", key="edit_task_close"):
-            _close_edit_task_dialog()
-        return
-
-    st.caption("Update the task fields below.")
-
-    topic = st.text_input(
-        "📚 Topic",
-        value=task.topic,
-        key="edit_task_topic",
-    )
-    complexity = st.selectbox(
-        "📊 Complexity",
-        options=["easy", "medium", "hard"],
-        index=["easy", "medium", "hard"].index(task.complexity),
-        key="edit_task_complexity",
-    )
-    correct_answer = st.text_input(
-        "✅ Correct answer",
-        value=str(task.correct_answer),
-        key="edit_task_answer",
-    )
-    text = st.text_area(
-        "📝 Problem",
-        value=task.text,
-        key="edit_task_text",
-    )
-    solution = st.text_area(
-        "💡 Solution",
-        value=task.solution,
-        key="edit_task_solution",
-    )
-
-    col_save, col_cancel = st.columns(2)
-    if col_save.button(
-        "💾 Save",
-        type="primary",
-        key="edit_task_save",
-        disabled=not topic.strip(),
-    ):
-        storage.update_task(
-            task_id,
-            topic=topic.strip(),
-            text=text.strip(),
-            complexity=complexity,
-            correct_answer=correct_answer.strip(),
-            solution=solution.strip(),
-        )
-        st.success("Task updated.")
-        _close_edit_task_dialog()
-    if col_cancel.button("✖ Cancel", key="edit_task_cancel"):
-        _close_edit_task_dialog()

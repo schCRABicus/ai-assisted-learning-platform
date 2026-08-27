@@ -5,9 +5,11 @@ from the assignments list by clicking **Edit** on an assignment. The page render
 a native Streamlit carousel over the assignment's tasks — each slide shows the
 problem text, the correct answer, and the solution — with per-slide **Edit** and
 **Remove** buttons that open modal dialogs
-(``views/components/modals.edit_task_dialog`` / ``remove_task_dialog``).
+(``views/components/edit_task_dialog.edit_task_dialog`` /
+``views/components/remove_task_dialog.remove_task_dialog``).
 **➕ Add task** opens the shared task-authoring dialog
-(``create_task_dialog``); when it saves, the carousel jumps to the new task.
+(``views/components/create_task_dialog.create_task_dialog``); when it saves, the
+carousel jumps to the new task.
 
 The assignment being edited is passed from the assignments page through
 ``st.session_state["edit_assignment_id"]`` (session state survives
@@ -24,9 +26,11 @@ import streamlit as st
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.auth import get_storage, require_roles
 from agentic_learning_portal.storage import Task
-from agentic_learning_portal.views.components.modals import (
+from agentic_learning_portal.views.components.create_task_dialog import (
     create_task_dialog,
-    edit_task_dialog,
+)
+from agentic_learning_portal.views.components.edit_task_dialog import edit_task_dialog
+from agentic_learning_portal.views.components.remove_task_dialog import (
     remove_task_dialog,
 )
 

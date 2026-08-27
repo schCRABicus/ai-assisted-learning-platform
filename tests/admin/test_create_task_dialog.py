@@ -1,19 +1,18 @@
-"""Tests for the shared dialogs (views/components/modals.py).
+"""Tests for the task-authoring dialog (views/components/create_task_dialog.py).
 
-The dialogs are exercised in isolation from the pages through tiny AppTest
-harnesses that open the real dialog for a seeded assignment. Each harness calls
+The dialog is exercised in isolation from the pages through a tiny AppTest
+harness that opens the real dialog for a seeded assignment. The harness calls
 the dialog unconditionally because AppTest only renders a ``st.dialog`` body on
 runs where its opening call is active — with an ``if``-guarded call the confirm
 click would never be processed.
 
-The task-creation dialog (``create_task_dialog``) is driven through
-:data:`CREATE_HARNESS`: tests type into the authoring form, patch
-``MathProblemGenerator.generate`` (so no real LLM call escapes the
-``_forbid_real_llm_calls`` guard), click Generate, and assert the phases the
-dialog walks through. Generation runs in a real worker thread, so these tests
-also exercise the live-progress path: the dialog's poll loop re-runs until the
-worker sets ``result``/``error``, and the collected ``log`` is what the progress
-UI renders.
+The dialog is driven through :data:`CREATE_HARNESS`: tests type into the
+authoring form, patch ``MathProblemGenerator.generate`` (so no real LLM call
+escapes the ``_forbid_real_llm_calls`` guard), click Generate, and assert the
+phases the dialog walks through. Generation runs in a real worker thread, so
+these tests also exercise the live-progress path: the dialog's poll loop re-runs
+until the worker sets ``result``/``error``, and the collected ``log`` is what
+the progress UI renders.
 """
 
 from __future__ import annotations
@@ -28,18 +27,10 @@ from agentic_learning_portal.auth import get_storage
 from agentic_learning_portal.domains.math import MathProblemGenerator
 
 # ``__AID__`` is replaced with the seeded assignment id per test.
-HARNESS = """
-import streamlit as st
-
-from agentic_learning_portal.views.components.modals import delete_assignment_dialog
-
-delete_assignment_dialog(__AID__)
-"""
-
 CREATE_HARNESS = """
 import streamlit as st
 
-from agentic_learning_portal.views.components.modals import create_task_dialog
+from agentic_learning_portal.views.components.create_task_dialog import create_task_dialog
 
 create_task_dialog(__AID__)
 """
@@ -56,16 +47,6 @@ _TASK = GeneratedTask(
 def _boss_id() -> int:
     """Return the env-seeded admin's user id."""
     return get_storage().get_user_by_username("boss").id
-
-
-def _open_dialog(assignment_id: int) -> AppTest:
-    """Run the delete harness and return the AppTest with the dialog open."""
-    at = AppTest.from_string(
-        HARNESS.replace("__AID__", str(assignment_id)), default_timeout=10
-    )
-    at.run()
-    assert not at.exception
-    return at
 
 
 def _open_create_dialog(assignment_id: int) -> AppTest:
@@ -104,50 +85,6 @@ def _fill_form(at: AppTest, topic: str = "Algebra", manual: str = "linear equati
     manual_input = _find_text_input(at, "subtopics")
     assert manual_input is not None
     manual_input.set_value(manual).run()
-
-
-# --- delete dialog (unchanged behavior) -----------------------------------------
-
-
-def test_dialog_renders_confirmation_prompt(portal_env) -> None:
-    """The dialog explains the irreversible delete before offering buttons."""
-    assignment = get_storage().create_assignment("doomed", created_by=_boss_id())
-
-    at = _open_dialog(assignment.id)
-
-    assert any(
-        "Are you sure you want to delete this assignment?" in m.value
-        for m in at.markdown
-    )
-    labels = {b.label for b in at.button}
-    assert "Yes, Delete" in labels
-    assert "Cancel" in labels
-
-
-def test_dialog_yes_deletes_the_assignment(portal_env) -> None:
-    """Confirming removes the assignment from storage."""
-    assignment = get_storage().create_assignment("doomed", created_by=_boss_id())
-    at = _open_dialog(assignment.id)
-
-    yes = [b for b in at.button if b.label == "Yes, Delete"]
-    assert yes, "expected the Yes, Delete button"
-    yes[0].click().run()
-
-    assert not at.exception
-    assert get_storage().get_assignment(assignment.id) is None
-
-
-def test_dialog_cancel_preserves_the_assignment(portal_env) -> None:
-    """Dismissing with Cancel leaves the assignment in storage."""
-    assignment = get_storage().create_assignment("kept", created_by=_boss_id())
-    at = _open_dialog(assignment.id)
-
-    cancel = [b for b in at.button if b.label == "Cancel"]
-    assert cancel, "expected the Cancel button"
-    cancel[0].click().run()
-
-    assert not at.exception
-    assert get_storage().get_assignment(assignment.id) is not None
 
 
 # --- create-task dialog ----------------------------------------------------------

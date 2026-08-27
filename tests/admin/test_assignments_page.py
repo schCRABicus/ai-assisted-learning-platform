@@ -175,7 +175,10 @@ def test_delete_button_opens_dialog_for_the_clicked_assignment(portal_env) -> No
     a1, _, _ = _seed_assignment(title="Alpha")
     a2, _, _ = _seed_assignment(title="Beta")
 
-    target = "agentic_learning_portal.views.components.modals.delete_assignment_dialog"
+    target = (
+        "agentic_learning_portal.views.components.delete_assignment_dialog"
+        ".delete_assignment_dialog"
+    )
     with patch(target) as dialog:
         at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
         at.run()

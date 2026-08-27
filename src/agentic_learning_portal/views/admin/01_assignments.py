@@ -21,7 +21,9 @@ import streamlit as st
 
 from agentic_learning_portal.auth import get_storage, require_roles
 from agentic_learning_portal.storage import Attempt, Storage
-from agentic_learning_portal.views.components.modals import delete_assignment_dialog
+from agentic_learning_portal.views.components.delete_assignment_dialog import (
+    delete_assignment_dialog,
+)
 
 
 def _format_timestamp(iso: str | None) -> str:

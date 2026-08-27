@@ -7,7 +7,7 @@ The page is assignment-centric: you first create an assignment (title + id,
 persisted immediately), then author its tasks one slot at a time in a native
 Streamlit carousel. Each slide's content depends on the slot's state — an empty
 slot shows a "Generate task" button that opens the shared task-creation dialog
-(``views/components/modals.create_task_dialog``); a slot whose task was saved to
+(``views/components/create_task_dialog.create_task_dialog``); a slot whose task was saved to
 storage shows the finished task card. A "➕" button to the right of the carousel
 adds another task slot. All task authoring happens through the dialog, which
 persists the task to storage and links it to the assignment; slots then backfill
@@ -20,7 +20,9 @@ import streamlit as st
 
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
 from agentic_learning_portal.auth import current_user, get_storage, require_roles
-from agentic_learning_portal.views.components.modals import create_task_dialog
+from agentic_learning_portal.views.components.create_task_dialog import (
+    create_task_dialog,
+)
 
 
 # --- assignment carousel helpers ---------------------------------------------------

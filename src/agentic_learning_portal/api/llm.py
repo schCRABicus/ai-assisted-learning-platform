@@ -32,7 +32,7 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import UnexpectedModelBehavior, ModelHTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +225,12 @@ async def ask_ai_for_structured_response(
 
     async def _call(model: ModelChain) -> OutputT:
         agent = Agent(model=model.current_model, output_type=output_type, system_prompt=system_prompt)
-        response = await agent.run(user_prompt)
-        return response.output
+        try:
+            response = await agent.run(user_prompt)
+            return response.output
+        except ModelHTTPError as exc:
+            if exc.status_code == 429 or 500 <= exc.status_code < 600:
+                raise LLMRetryableError(f"HTTP {exc.status_code}")
 
     async def _call_limited(model: ModelChain) -> OutputT:
         if limiter is not None:
