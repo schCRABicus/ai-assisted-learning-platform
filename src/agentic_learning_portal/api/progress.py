@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from abc import ABC
 from dataclasses import dataclass
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,16 @@ class LoggingProgressListener(ProgressListener):
             f" ({event.attempt}/{event.total})" if event.attempt is not None else ""
         )
         logger.info("progress[%s]%s: %s", event.stage, window, event.message)
+
+
+class CallbackProgressListener(ProgressListener):
+    """Executes callback function on any progress event."""
+
+    def __init__(self, callback: Callable[[ProgressEvent], None]) -> None:
+        self.callback = callback
+
+    async def on_progress(self, event: ProgressEvent) -> None:
+        self.callback(event)
 
 
 async def report_progress(

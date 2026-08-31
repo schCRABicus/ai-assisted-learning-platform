@@ -154,6 +154,11 @@ def render_assignment_editor_page() -> None:
 
     if not tasks:
         st.info("No tasks in this assignment yet — use ➕ Add task to create one.")
+        # The first task is added through the create dialog; dispatch it here too,
+        # since ``st.stop()`` below would otherwise cut the page off before the
+        # dialog dispatch at the end of this function.
+        if st.session_state.get("create_task_open") is not None:
+            create_task_dialog(st.session_state["create_task_open"])
         st.stop()
 
     total = len(tasks)

@@ -17,6 +17,7 @@ the progress UI renders.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import AsyncMock, patch
 
 from streamlit.testing.v1 import AppTest
@@ -35,11 +36,35 @@ from agentic_learning_portal.views.components.create_task_dialog import create_t
 create_task_dialog(__AID__)
 """
 
+# Same as ``CREATE_HARNESS`` but then runs the ``on_dismiss`` callback as a
+# dismissal would, and records what is left in session state afterwards.
+CANCEL_HARNESS = """
+import streamlit as st
+
+from agentic_learning_portal.views.components.create_task_dialog import (
+    _cancel_create_task_dialog,
+    create_task_dialog,
+)
+
+create_task_dialog(__AID__)
+_cancel_create_task_dialog()
+st.session_state["_dialog_still_open"] = "create_task_open" in st.session_state
+st.session_state["_dialog_state_present"] = "create_task_state" in st.session_state
+"""
+
 _TASK = GeneratedTask(
     topic="Algebra",
     text="What is 2 + 2?",
     complexity="easy",
     correct_answer="4",
+    solution="Add the numbers.",
+)
+
+_TASK_2 = GeneratedTask(
+    topic="Geometry",
+    text="What is 3 + 3?",
+    complexity="easy",
+    correct_answer="6",
     solution="Add the numbers.",
 )
 
@@ -231,3 +256,140 @@ def test_cancel_clears_dialog_state(portal_env) -> None:
     assert state["result"] is None
     assert state["error"] is None
     assert get_storage().list_assignment_tasks(assignment.id) == []
+
+
+def test_dismissal_callback_cancels_and_clears_dialog(portal_env) -> None:
+    """The ``on_dismiss`` callback drops the flags so the dialog can't re-open.
+
+    Dismissing the dialog (✕ / ESC / outside click) with ``on_dismiss="ignore"``
+    would only hide it on the frontend while ``create_task_open`` stays set, so
+    the page would keep re-opening it on every progress-poll rerun. The callback
+    clears both flags, which is what finally closes it.
+    """
+    assignment = get_storage().create_assignment("dismiss", created_by=_boss_id())
+    at = AppTest.from_string(
+        CANCEL_HARNESS.replace("__AID__", str(assignment.id)), default_timeout=20
+    )
+    at.run()
+
+    assert not at.exception
+    assert at.session_state["_dialog_still_open"] is False
+    assert at.session_state["_dialog_state_present"] is False
+
+
+def test_worker_discards_result_when_cancelled(portal_env) -> None:
+    """A dismissed generation's worker finishes but discards its outcome.
+
+    The ``on_dismiss`` callback can't interrupt the in-flight
+    ``asyncio.run(MathProblemGenerator.generate(...))``, so the worker runs to
+    completion — but the ``cancel`` flag makes it skip writing ``result``/``error``,
+    so a stale outcome can't leak into a later dialog run.
+    """
+    from agentic_learning_portal.domains.math import MathProblemGenerationPromptInput
+    from agentic_learning_portal.views.components.create_task_dialog import (
+        _run_generation_in_thread,
+    )
+
+    gen_state = {"log": [], "cancel": True}
+    prompt_input = MathProblemGenerationPromptInput(
+        topic="Algebra",
+        subtopics=["linear equations"],
+        context="Plants vs Zombie",
+        complexity="easy",
+        grade=5,
+    )
+    with patch.object(
+        MathProblemGenerator, "generate", new=AsyncMock(return_value=_TASK)
+    ):
+        worker = threading.Thread(
+            target=_run_generation_in_thread,
+            args=(prompt_input, gen_state),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    # The cancelled worker finished generating but discarded its outcome.
+    assert gen_state.get("result") is None
+    assert gen_state.get("error") is None
+
+
+# --- wizard steps ----------------------------------------------------------------
+
+
+def test_steps_2_and_3_locked_until_generation(portal_env) -> None:
+    """The wizard opens on step 1 with steps 2 and 3 disabled (no generated state)."""
+    assignment = get_storage().create_assignment("steps", created_by=_boss_id())
+    at = _open_create_dialog(assignment.id)
+
+    assert not at.exception
+    step1 = at.button(key="step_nav_1")
+    step2 = at.button(key="step_nav_2")
+    step3 = at.button(key="step_nav_3")
+    assert step1 is not None and not step1.disabled
+    assert step2 is not None and step2.disabled
+    assert step3 is not None and step3.disabled
+    # Only the authoring form is shown.
+    assert _find_text_input(at, "topic") is not None
+
+
+def test_every_step_reachable_after_generation(portal_env) -> None:
+    """Once a task is generated, step 1 (edit) and step 2 (log) stay reachable."""
+    assignment = get_storage().create_assignment("nav", created_by=_boss_id())
+    at = _open_create_dialog(assignment.id)
+    _fill_form(at)
+
+    with patch.object(
+        MathProblemGenerator, "generate", new=AsyncMock(return_value=_TASK)
+    ):
+        _find_button(at, "🎯 Generate").click().run()
+
+    assert not at.exception
+    state = at.session_state["create_task_state"]
+    assert state["step"] == 3
+    # Step 3 (Review) shows the result; every step is enabled now.
+    assert not at.button(key="step_nav_1").disabled
+    assert not at.button(key="step_nav_2").disabled
+    assert not at.button(key="step_nav_3").disabled
+    assert _find_button(at, "Save") is not None
+
+    # Back to step 1: the authoring form is reachable again.
+    at.button(key="step_nav_1").click().run()
+    assert not at.exception
+    assert _find_text_input(at, "topic") is not None
+    assert _find_button(at, "Save") is None
+
+    # Forward to step 2: the completed progress log is shown (no poll loop).
+    at.button(key="step_nav_2").click().run()
+    assert not at.exception
+    assert any("Generation progress" in e.label for e in at.expander)
+
+
+def test_generate_restarts_flow_clearing_previous_result(portal_env) -> None:
+    """Re-running generation from step 1 clears the previous outcome and replaces it."""
+    assignment = get_storage().create_assignment("restart", created_by=_boss_id())
+    at = _open_create_dialog(assignment.id)
+    _fill_form(at)
+
+    with patch.object(
+        MathProblemGenerator, "generate", new=AsyncMock(return_value=_TASK)
+    ):
+        _find_button(at, "🎯 Generate").click().run()
+
+    assert not at.exception
+    assert at.session_state["create_task_state"]["result"].text == _TASK.text
+
+    # Back to the form and generate a second time with a different task.
+    at.button(key="step_nav_1").click().run()
+    with patch.object(
+        MathProblemGenerator, "generate", new=AsyncMock(return_value=_TASK_2)
+    ):
+        _find_button(at, "🎯 Generate").click().run()
+
+    assert not at.exception
+    state = at.session_state["create_task_state"]
+    # The previous outcome was cleared and replaced by the new generation.
+    assert state["step"] == 3
+    assert state["result"].text == _TASK_2.text
+    assert state["result"].text != _TASK.text

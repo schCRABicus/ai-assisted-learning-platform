@@ -318,6 +318,40 @@ def test_editor_empty_assignment_still_offers_add_task(portal_env) -> None:
     assert any(b.key == "editor_add_task" for b in at.button)
 
 
+def test_add_task_opens_create_dialog_on_empty_assignment(portal_env) -> None:
+    """➕ Add task opens the dialog even when the assignment has no tasks yet."""
+    assignment, _ = _seed_assignment(n_tasks=0)
+
+    at = _open_editor(assignment.id)
+    at.button(key="editor_add_task").click().run()
+
+    assert not at.exception
+    assert at.session_state["create_task_open"] == assignment.id
+    # The authoring form renders inside the dialog.
+    assert _find_text_input(at, "topic") is not None
+    assert _find_button(at, "🎯 Generate") is not None
+
+
+def test_add_first_task_to_empty_assignment_then_jumps_to_it(portal_env) -> None:
+    """Full empty-assignment flow: Add task → generate → save → carousel jumps to it."""
+    assignment, _ = _seed_assignment(n_tasks=0)
+
+    at = _open_editor(assignment.id)
+    new_task = _task("Geometry", "Triangle area?", answer="6", solution="Half base times height.")
+    _generate_and_save_task(at, assignment.id, "Geometry", "triangles", new_task)
+
+    assert not at.exception
+    tasks = get_storage().list_assignment_tasks(assignment.id)
+    assert len(tasks) == 1
+    assert tasks[0].text == "Triangle area?"
+    # The carousel jumped to the newly added (only) task.
+    assert at.session_state["editor_current_index"] == 0
+    assert "editor_jump_to_last" not in at.session_state
+    marks = [m.value for m in at.markdown]
+    assert any("Task 1 of 1" in m for m in marks)
+    assert any("Triangle area?" in m for m in marks)
+
+
 def test_add_task_button_opens_create_dialog(portal_env) -> None:
     """➕ Add task opens the shared task-creation dialog for the assignment."""
     assignment, _ = _seed_assignment(n_tasks=1)
