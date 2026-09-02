@@ -139,9 +139,9 @@ MODELS: dict[str, ModelChain] = {
     # step-by-step solution — from a prompt input. Also the Wolfram|Alpha
     # judge's translation fallback when no Groq key is set (see
     # ``domains.math.judges.build_judge_ensemble``).
-    "task_generation": ModelChain(primary_model="google:gemini-3.7-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.5-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
+    "task_generation": ModelChain(primary_model="google:gemini-3.5-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.7-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
     # Suggests candidate subtopics for a free-text topic in the admin UI.
-    "subtopic_suggestion": ModelChain(primary_model="google:gemini-3.7-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.5-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
+    "subtopic_suggestion": ModelChain(primary_model="google:gemini-3.5-flash", secondary_models=["google:gemini-3.6-flash", "google:gemini-3.7-flash", "google:gemini-3-flash", "google:gemma-4-31b"]),
     # Translates a task's prose into a bare Wolfram|Alpha-computable expression
     # (``WolframAlphaJudge``). A different provider/family than the generator so
     # the judge doesn't share the authoring model's blind spots. Served by Groq
@@ -149,7 +149,7 @@ MODELS: dict[str, ModelChain] = {
     # prefix is the pydantic-ai provider, the rest is Groq's model id.
     "wolfram_translation": ModelChain(primary_model="groq:openai/gpt-oss-120b", secondary_models=["openai/gpt-oss-20b"]),
     # Solves the task for an independent numeric answer (``QwenMathJudge``).
-    "qwen_solver": ModelChain(primary_model="qwen/qwen3.8-27b", secondary_models=["qwen/qwen3.7-27b", "qwen/qwen3.6-27b"]),
+    "qwen_solver": ModelChain(primary_model="qwen/qwen3.8-27b", secondary_models=["qwen/qwen3.7-27b"]),
 }
 
 

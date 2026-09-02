@@ -90,8 +90,7 @@ def get_subtopic_suggestions(topic: str, _model: ModelChain) -> list[str]:
     # (Streamlit's hasher walks object internals and ``ModelChain`` is not
     # hashable by it). The model is a stable module-level constant, so the
     # cache key only needs the topic.
-    return ["Addition", "Subtraction"]
-    # return asyncio.run(suggest_subtopics(topic, model=_model))
+    return asyncio.run(suggest_subtopics(topic, model=_model))
 
 
 # def _run_generation_in_thread(
@@ -131,17 +130,6 @@ def _run_generation(
         except Exception as e:  # noqa: BLE001 - surface any failure in the UI
             if not gen_state.get("cancel", False):
                 gen_state["error"] = f"{type(e).__name__}: {e}"
-
-        st.rerun()
-
-    asyncio.run(_run())
-
-def _await_generation_completion(gen_state: dict):
-    async def _run() -> None:
-        if gen_state.get("cancel", False) or gen_state.get("result", False):
-            return
-
-        time.sleep(POLL_INTERVAL_S)
 
     asyncio.run(_run())
 
@@ -192,9 +180,22 @@ def _cancel_create_task_dialog() -> None:
 
 
 @st.fragment(run_every=POLL_INTERVAL_S)
-def _render_progress_log_loop(state: dict) -> None:
+def _render_live_progress(state: dict) -> None:
     """Render the progress-log and handle navigation clicks."""
-    _render_progress_log(state["log"])
+    status = st.status("✨ Generating task...", expanded=True)
+    with st.expander("⚙️ Generation progress", expanded=True):
+        _render_progress_log(state["log"])
+
+    if state.get("result") is not None:
+        status.update(label="✅ Task generated and verified", state="complete")
+        state["generating"] = False
+        state["step"] = 3
+        st.rerun(scope="app")  # full dialog rerun so step 3 renders
+    elif state.get("error") is not None:
+        status.update(label="❌ Task generation failed", state="error")
+        state["generating"] = False
+        state["step"] = 3
+        st.rerun(scope="app")
 
 def _render_progress_log(events: list) -> None:
     """Render the collected ``ProgressEvent`` log as icon + message lines."""
@@ -250,139 +251,136 @@ def _render_step_navigation(state: dict) -> None:
 
 
 def _render_task_settings_step(state: dict) -> None:
-    content = st.empty()
-    with content.container(key="task_settings_container", border=True):
-        """The authoring form phase (wizard step 1)."""
-        st.caption("Describe the task below, then Generate.")
+    """The authoring form phase (wizard step 1)."""
+    st.caption("Describe the task below, then Generate.")
 
-        # The form's widget values can be pruned when the wizard leaves the form
-        # (Streamlit only retains values for widgets rendered in the most recent
-        # run), so they are mirrored into ``state["form"]`` and used to rehydrate
-        # the widgets when the user navigates back to edit.
-        form = state.setdefault("form", {})
-        form.setdefault("topic", "")
-        form.setdefault("selected_subtopics", [])
-        form.setdefault("manual_subtopics", "")
-        form.setdefault("context", DEFAULT_TASK_CONTEXT)
-        form.setdefault("grade", 5)
-        form.setdefault("complexity", "easy")
+    # The form's widget values can be pruned when the wizard leaves the form
+    # (Streamlit only retains values for widgets rendered in the most recent
+    # run), so they are mirrored into ``state["form"]`` and used to rehydrate
+    # the widgets when the user navigates back to edit.
+    form = state.setdefault("form", {})
+    form.setdefault("topic", "")
+    form.setdefault("selected_subtopics", [])
+    form.setdefault("manual_subtopics", "")
+    form.setdefault("context", DEFAULT_TASK_CONTEXT)
+    form.setdefault("grade", 5)
+    form.setdefault("complexity", "easy")
 
-        # --- topic + dynamically suggested subtopics -----------------------------------
+    # --- topic + dynamically suggested subtopics -----------------------------------
 
-        topic = st.text_input(
-            "📚 Topic",
-            value=form["topic"],
-            placeholder="e.g. Arithmetic, Algebra, Geometry",
-            help="The math topic to generate a task for.",
-            key="create_task_topic",
-        )
+    topic = st.text_input(
+        "📚 Topic",
+        value=form["topic"],
+        placeholder="e.g. Arithmetic, Algebra, Geometry",
+        help="The math topic to generate a task for.",
+        key="create_task_topic",
+    )
 
-        # ``get_subtopic_suggestions`` is memoized, so re-runs (widget interaction,
-        # closing and reopening the form) hit the cache instead of firing another
-        # LLM call.
-        suggestions: list[str] = []
-        if topic.strip():
-            with st.spinner("🔍 Suggesting subtopics..."):
-                suggestions = get_subtopic_suggestions(
-                    topic, DEFAULT_SUBTOPIC_SUGGESTION_MODEL
-                )
-            if not suggestions:
-                st.warning(
-                    "The LLM could not suggest subtopics for this topic. Add them "
-                    "manually below."
-                )
-
-        selected_subtopics = st.multiselect(
-            "🧩 Subtopics",
-            options=suggestions,
-            default=[s for s in form["selected_subtopics"] if s in suggestions],
-            key="create_task_subtopics",
-            help="LLM-suggested subtopics; select the ones to focus on.",
-        )
-        manual = st.text_input(
-            "✍️ Add your own subtopics (comma-separated)",
-            value=form["manual_subtopics"],
-            placeholder="e.g. fractions, word problems",
-            key="create_task_manual_subtopics",
-        )
-        manual_subtopics = [s.strip() for s in manual.split(",") if s.strip()]
-        subtopics = list(selected_subtopics) + [
-            s for s in manual_subtopics if s not in selected_subtopics
-        ]
-
-        if not suggestions:
-            st.caption("💡 Enter a topic to get LLM-suggested subtopics.")
-        elif not selected_subtopics:
-            st.caption("💡 Select the subtopics to focus on (or add your own below).")
-
-        # --- other parameters ----------------------------------------------------------
-
-        context = st.text_input(
-            "🎭 Context",
-            value=form["context"],
-            key="create_task_context",
-            help="Thematic setting for the problem (e.g. Lego, Plants vs Zombies).",
-        )
-
-        col_grade, col_complexity = st.columns(2)
-        grade = col_grade.selectbox(
-            "🎓 Grade",
-            options=list(range(1, 12)),
-            index=form["grade"] - 1,
-            key="create_task_grade",
-            help="Student grade level (1-11).",
-        )
-        complexity = col_complexity.selectbox(
-            "📊 Complexity",
-            options=["easy", "medium", "hard"],
-            index=["easy", "medium", "hard"].index(form["complexity"]),
-            key="create_task_complexity",
-        )
-
-        # Mirror the form's current values back into the state so they survive a
-        # round trip through steps 2 and 3 (see the rehydration comment above).
-        form["topic"] = topic
-        form["selected_subtopics"] = list(selected_subtopics)
-        form["manual_subtopics"] = manual
-        form["context"] = context
-        form["grade"] = grade
-        form["complexity"] = complexity
-
-        # --- generate / discard ---------------------------------------------------------
-
-        # def trigger_generate():
-
-
-        generate_button = st.button(
-            "🎯 Generate",
-            type="primary",
-            disabled=not (topic.strip() and subtopics),
-            key="create_task_generate",
-        )
-        if generate_button:
-            prompt_input = MathProblemGenerationPromptInput(
-                topic=topic.strip(),
-                subtopics=subtopics,
-                context=context.strip() or DEFAULT_TASK_CONTEXT,
-                complexity=complexity,
-                grade=grade,
+    # ``get_subtopic_suggestions`` is memoized, so re-runs (widget interaction,
+    # closing and reopening the form) hit the cache instead of firing another
+    # LLM call.
+    suggestions: list[str] = []
+    if topic.strip():
+        with st.spinner("🔍 Suggesting subtopics..."):
+            suggestions = get_subtopic_suggestions(
+                topic, DEFAULT_SUBTOPIC_SUGGESTION_MODEL
             )
-            # Restart the wizard from scratch: drop any previous generation outcome,
-            # kick off a fresh background thread, and advance to the live step.
-            state["log"] = []
-            state["result"] = None
-            state["error"] = None
-            state["prompt_input"] = prompt_input
-            state["generating"] = True
-            state["step"] = 2
-            threading.Thread(
-                target=_run_generation,
-                args=(prompt_input, state),
-                daemon=True,
-            ).start()
-            st.rerun()
+        if not suggestions:
+            st.warning(
+                "The LLM could not suggest subtopics for this topic. Add them "
+                "manually below."
+            )
 
-        st.button("✖ Cancel", key="create_task_cancel", on_click=_close_create_task_dialog)
+    selected_subtopics = st.multiselect(
+        "🧩 Subtopics",
+        options=suggestions,
+        default=[s for s in form["selected_subtopics"] if s in suggestions],
+        key="create_task_subtopics",
+        help="LLM-suggested subtopics; select the ones to focus on.",
+    )
+    manual = st.text_input(
+        "✍️ Add your own subtopics (comma-separated)",
+        value=form["manual_subtopics"],
+        placeholder="e.g. fractions, word problems",
+        key="create_task_manual_subtopics",
+    )
+    manual_subtopics = [s.strip() for s in manual.split(",") if s.strip()]
+    subtopics = list(selected_subtopics) + [
+        s for s in manual_subtopics if s not in selected_subtopics
+    ]
+
+    if not suggestions:
+        st.caption("💡 Enter a topic to get LLM-suggested subtopics.")
+    elif not selected_subtopics:
+        st.caption("💡 Select the subtopics to focus on (or add your own below).")
+
+    # --- other parameters ----------------------------------------------------------
+
+    context = st.text_input(
+        "🎭 Context",
+        value=form["context"],
+        key="create_task_context",
+        help="Thematic setting for the problem (e.g. Lego, Plants vs Zombies).",
+    )
+
+    col_grade, col_complexity = st.columns(2)
+    grade = col_grade.selectbox(
+        "🎓 Grade",
+        options=list(range(1, 12)),
+        index=form["grade"] - 1,
+        key="create_task_grade",
+        help="Student grade level (1-11).",
+    )
+    complexity = col_complexity.selectbox(
+        "📊 Complexity",
+        options=["easy", "medium", "hard"],
+        index=["easy", "medium", "hard"].index(form["complexity"]),
+        key="create_task_complexity",
+    )
+
+    # Mirror the form's current values back into the state so they survive a
+    # round trip through steps 2 and 3 (see the rehydration comment above).
+    form["topic"] = topic
+    form["selected_subtopics"] = list(selected_subtopics)
+    form["manual_subtopics"] = manual
+    form["context"] = context
+    form["grade"] = grade
+    form["complexity"] = complexity
+
+    # --- generate / discard ---------------------------------------------------------
+
+    def on_generate_button_click():
+        prompt_input = MathProblemGenerationPromptInput(
+            topic=topic.strip(),
+            subtopics=subtopics,
+            context=context.strip() or DEFAULT_TASK_CONTEXT,
+            complexity=complexity,
+            grade=grade,
+        )
+        # Restart the wizard from scratch: drop any previous generation outcome,
+        # kick off a fresh background thread, and advance to the live step.
+        state["log"] = []
+        state["result"] = None
+        state["error"] = None
+        state["prompt_input"] = prompt_input
+        state["generating"] = True
+        state["step"] = 2
+        threading.Thread(
+            target=_run_generation,
+            args=(prompt_input, state),
+            daemon=True,
+        ).start()
+
+    generate_button = st.button(
+        "🎯 Generate",
+        type="primary",
+        disabled=not (topic.strip() and subtopics),
+        key="create_task_generate",
+        on_click=on_generate_button_click,
+    )
+
+    st.button("✖ Cancel", key="create_task_cancel", on_click=_close_create_task_dialog)
+
 
 def _render_generation_progress_step(state: dict) -> None:
     """Live progress panel while a task is generated (wizard step 2).
@@ -394,100 +392,81 @@ def _render_generation_progress_step(state: dict) -> None:
     finished (e.g. from step 3), the finished log is shown without the poll
     loop.
     """
-    content = st.empty()
-    with content.container(key="generation_progress_container", border=True):
-        if state.get("generating", False):
-            status = st.status("✨ Generating task...", expanded=True)
-            with st.expander("⚙️ Generation progress", expanded=True):
-                _render_progress_log_loop(state)
-
-            _await_generation_completion(state)
-
-            if state.get("result") is not None:
-                status.update(label="✅ Task generated and verified", state="complete")
-                state["generating"] = False
-                state["step"] = 3
-            elif state.get("error") is not None:
-                status.update(label="❌ Task generation failed", state="error")
-                state["generating"] = False
-                state["step"] = 3
-
-            st.rerun()
-
-        # Generation already finished; show the log without re-running the worker.
-        if not state.get("generating", False):
-            if state.get("result") is not None:
-                st.status("✅ Task generated and verified", state="complete", expanded=False)
-            elif state.get("error") is not None:
-                st.status("❌ Task generation failed", state="error", expanded=False)
-            with st.expander("⚙️ Generation progress", expanded=True):
-                _render_progress_log(state["log"])
+    if state.get("generating", False):
+        _render_live_progress(state)
+    else:
+        # Finished (user navigated back to step 2): show the log, no polling.
+        if state.get("result") is not None:
+            st.status("✅ Task generated and verified", state="complete", expanded=False)
+        elif state.get("error") is not None:
+            st.status("❌ Task generation failed", state="error", expanded=False)
+        with st.expander("⚙️ Generation progress", expanded=True):
+            _render_progress_log(state["log"])
 
 
 def _render_task_generation_result_step(assignment_id: int, state: dict) -> None:
     """The finished-task-card phase (wizard step 3, success): preview + Save / Cancel."""
-    content = st.empty()
-    with content.container(key="generation_result_container", border=True):
-        task = state["result"]
-        # The prompt is only available in-session; storage-synced tasks would have
-        # none, so degrade to "—".
-        prompt_input = state.get("prompt_input")
-        grade = prompt_input.grade if prompt_input is not None else "—"
-        subtopics = (
-            ", ".join(prompt_input.subtopics) if prompt_input is not None else "—"
-        )
+    task = state["result"]
+    # The prompt is only available in-session; storage-synced tasks would have
+    # none, so degrade to "—".
+    prompt_input = state.get("prompt_input")
+    grade = prompt_input.grade if prompt_input is not None else "—"
+    subtopics = (
+        ", ".join(prompt_input.subtopics) if prompt_input is not None else "—"
+    )
 
-        st.success("Task generated and verified.")
-        with st.expander("⚙️ Generation progress", expanded=False):
-            _render_progress_log(state["log"])
+    st.success("Task generated and verified.")
+    with st.expander("⚙️ Generation progress", expanded=False):
+        _render_progress_log(state["log"])
 
-        st.markdown(f"**📚 Topic:** {task.topic}")
-        meta = st.columns(4)
-        meta[0].markdown(f"**🎓 Grade:** {grade}")
-        meta[1].markdown(f"**📊 Complexity:** {task.complexity}")
-        meta[2].markdown(f"**🧩 Subtopics:** {subtopics}")
+    st.markdown(f"**📚 Topic:** {task.topic}")
+    meta = st.columns(4)
+    meta[0].markdown(f"**🎓 Grade:** {grade}")
+    meta[1].markdown(f"**📊 Complexity:** {task.complexity}")
+    meta[2].markdown(f"**🧩 Subtopics:** {subtopics}")
 
-        st.markdown("---")
-        st.markdown(f"**📝 Problem**\n\n{latex_to_plain_text(task.text)}")
-        st.markdown(f"**✅ Correct answer:** `{task.correct_answer}`")
-        with st.expander("💡 Solution", expanded=False):
-            st.markdown(latex_to_plain_text(task.solution))
-        st.markdown("---")
+    st.markdown("---")
+    st.markdown(f"**📝 Problem**\n\n{latex_to_plain_text(task.text)}")
+    st.markdown(f"**✅ Correct answer:** `{task.correct_answer}`")
+    with st.expander("💡 Solution", expanded=False):
+        st.markdown(latex_to_plain_text(task.solution))
+    st.markdown("---")
 
-        col_save, col_cancel = st.columns(2)
-        if col_save.button("💾 Save", type="primary", key="create_task_save"):
-            storage = get_storage()
-            persisted = storage.create_task(task)
-            storage.add_task_to_assignment(assignment_id, persisted.id)
-            state["task_id"] = persisted.id
-            st.success(f"Task #{persisted.id} saved to the assignment.")
-            _close_create_task_dialog()
-        if col_cancel.button("✖ Cancel", key="create_task_cancel"):
-            _close_create_task_dialog()
+    col_save, col_cancel = st.columns(2)
+    if col_save.button("💾 Save", type="primary", key="create_task_save"):
+        storage = get_storage()
+        persisted = storage.create_task(task)
+        storage.add_task_to_assignment(assignment_id, persisted.id)
+        state["task_id"] = persisted.id
+        st.success(f"Task #{persisted.id} saved to the assignment.")
+        _close_create_task_dialog()
+    if col_cancel.button("✖ Cancel", key="create_task_cancel"):
+        _close_create_task_dialog()
 
 
 def _render_create_task_error(state: dict) -> None:
     """The failure phase (wizard step 3, failure): show the error + log, offer a retry."""
-    with st.container(border=True):
-        st.error(f"Task generation failed: {state['error']}")
-        with st.expander("⚙️ Generation progress", expanded=True):
-            _render_progress_log(state["log"])
+    # with st.container(border=True):
+    st.error(f"Task generation failed: {state['error']}")
+    with st.expander("⚙️ Generation progress", expanded=True):
+        _render_progress_log(state["log"])
 
-        col_retry, col_cancel = st.columns(2)
-        if col_retry.button("↻ Try again", key="create_task_retry"):
-            state["generating"] = False
-            state["result"] = None
-            state["error"] = None
-            state["step"] = 1
-            st.rerun()
-        if col_cancel.button("✖ Cancel", key="create_task_cancel"):
-            _close_create_task_dialog()
+    col_retry, col_cancel = st.columns(2)
+    if col_retry.button("↻ Try again", key="create_task_retry"):
+        state["generating"] = False
+        state["result"] = None
+        state["error"] = None
+        state["step"] = 1
+        st.rerun()
+    if col_cancel.button("✖ Cancel", key="create_task_cancel"):
+        _close_create_task_dialog()
 
 
 @st.dialog(
     "Task Creation",
     dismissible=True,
     on_dismiss=_cancel_create_task_dialog,
+    width="medium",
 )
 def create_task_dialog(assignment_id: int) -> None:
     """Author and save a task for ``assignment_id`` in a modal wizard.
@@ -516,11 +495,16 @@ def create_task_dialog(assignment_id: int) -> None:
     _render_step_navigation(state)
     st.divider()
 
+    content = st.empty()
     if step == 1:
-        _render_task_settings_step(state)
+        with content.container(border=True):
+            _render_task_settings_step(state)
     elif step == 2:
-        _render_generation_progress_step(state)
+        with content.container(border=True):
+            _render_generation_progress_step(state)
     elif state.get("result") is not None:
-        _render_task_generation_result_step(assignment_id, state)
+        with content.container(border=True):
+            _render_task_generation_result_step(assignment_id, state)
     else:
-        _render_create_task_error(state)
+        with content.container(border=True):
+            _render_create_task_error(state)

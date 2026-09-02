@@ -287,7 +287,7 @@ def test_worker_discards_result_when_cancelled(portal_env) -> None:
     """
     from agentic_learning_portal.domains.math import MathProblemGenerationPromptInput
     from agentic_learning_portal.views.components.create_task_dialog import (
-        _run_generation_in_thread,
+        _run_generation,
     )
 
     gen_state = {"log": [], "cancel": True}
@@ -302,7 +302,7 @@ def test_worker_discards_result_when_cancelled(portal_env) -> None:
         MathProblemGenerator, "generate", new=AsyncMock(return_value=_TASK)
     ):
         worker = threading.Thread(
-            target=_run_generation_in_thread,
+            target=_run_generation,
             args=(prompt_input, gen_state),
             daemon=True,
         )
