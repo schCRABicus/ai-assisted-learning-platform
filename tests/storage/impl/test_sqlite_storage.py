@@ -503,6 +503,26 @@ def test_delete_assignment_keeps_task_shared_with_another_assignment() -> None:
     assert [t.text for t in s.list_assignment_tasks(second.id)] == ["shared"]
 
 
+def test_assign_assignment() -> None:
+    """A task still referenced by a surviving assignment must not be deleted."""
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("First", teacher.id, assigned_to=None)
+
+    assert assignment.assigned_to is None
+    s.assign_assignment(assignment.id, student.id)
+    assert s.get_assignment(assignment.id).assigned_to is student.id
+
+def test_unassign_assignment() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("First", teacher.id, assigned_to=student.id)
+
+    assert s.get_assignment(assignment.id).assigned_to is student.id
+    s.assign_assignment(assignment.id, None)
+    assert s.get_assignment(assignment.id).assigned_to is None
+
+
 def test_remove_task_from_assignment_unlinks_and_deletes_unshared() -> None:
     """Removing a task deletes it when no other assignment references it."""
     s = _storage()

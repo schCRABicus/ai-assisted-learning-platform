@@ -605,6 +605,18 @@ class SqliteStorage(Storage):
             )
             self._conn.commit()
 
+    def assign_assignment(
+            self,
+            assignment_id: int,
+            assign_to: int | None = None,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE assignments SET assigned_to = ? WHERE id = ?",
+                (assign_to, assignment_id),
+            )
+            self._conn.commit()
+
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         with self._lock:
             rows = self._conn.execute(

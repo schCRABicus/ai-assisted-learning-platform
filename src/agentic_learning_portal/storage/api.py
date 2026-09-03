@@ -164,6 +164,14 @@ class Storage(ABC):
         """Attach a task to an assignment at ``position`` (appends when omitted)."""
 
     @abstractmethod
+    def assign_assignment(
+        self,
+        assignment_id: int,
+        assign_to: int | None = None,
+    ) -> None:
+        """Assign the specified assignment to ``assign_to``, or ``None`` if missing."""
+
+    @abstractmethod
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         """Return the tasks of an assignment in order."""
 

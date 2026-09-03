@@ -406,6 +406,16 @@ class InMemoryStorage(Storage):
                 position = max((p for p, _ in links), default=-1) + 1
             links.append((position, task_id))
 
+    def assign_assignment(
+        self,
+        assignment_id: int,
+        assign_to: int | None = None,
+    ) -> None:
+        with self._lock:
+            assignment = self._get_assignment(assignment_id)
+            if assignment is not None:
+                assignment.assigned_to = assign_to
+
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         with self._lock:
             links = sorted(

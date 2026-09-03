@@ -141,6 +141,19 @@ def render_assignment_editor_page() -> None:
         #     st.switch_page(ASSIGNMENTS_PAGE)
         st.button("← Back", key="editor_back", use_container_width=True, on_click=lambda :st.switch_page(ASSIGNMENTS_PAGE))
 
+    def on_assigned_to_change(selection):
+        assignment.assigned_to = selection
+
+    students = storage.list_users(role = "student")
+    chosen_student_index = next((i for i, student in enumerate(students) if student.id == assignment.assigned_to), None)
+    assigned_to = st.selectbox(
+        "Select user to assign to...",
+        students,
+        index=chosen_student_index,
+        placeholder="Select student to assign to...",
+        on_change=on_assigned_to_change,
+    )
+
     tasks = storage.list_assignment_tasks(assignment_id)
 
     # The create-task dialog just closed: jump to the newly added (last) task.
