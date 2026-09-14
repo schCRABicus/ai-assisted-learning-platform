@@ -141,14 +141,22 @@ def render_assignment_editor_page() -> None:
         #     st.switch_page(ASSIGNMENTS_PAGE)
         st.button("← Back", key="editor_back", use_container_width=True, on_click=lambda :st.switch_page(ASSIGNMENTS_PAGE))
 
-    def on_assigned_to_change(selection):
-        assignment.assigned_to = selection
+    def on_assigned_to_change():
+        selection = st.session_state["assigned_to_selector"]
+        assignment.assigned_to = selection.id
+        # Streamlit runs ``on_change`` callbacks on a different thread than the
+        # script run, and ``SqliteStorage`` connections can't cross threads — so
+        # fetch a storage bound to *this* thread rather than reusing the one
+        # captured above (``get_storage`` hands out one instance per thread).
+        get_storage().assign_assignment(assignment.id, selection.id)
 
     students = storage.list_users(role = "student")
     chosen_student_index = next((i for i, student in enumerate(students) if student.id == assignment.assigned_to), None)
     assigned_to = st.selectbox(
         "Select user to assign to...",
         students,
+        key="assigned_to_selector",
+        format_func=lambda student: student.username,
         index=chosen_student_index,
         placeholder="Select student to assign to...",
         on_change=on_assigned_to_change,
