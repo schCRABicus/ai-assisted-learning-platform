@@ -44,11 +44,15 @@ class Storage(ABC):
         *,
         email: str | None = None,
         password: str | None = None,
+        email_verified: bool = True,
     ) -> User:
         """Create and return a new user holding one or more roles.
 
         When ``password`` is given it is stored as a salted hash (never as
-        plaintext); leave it ``None`` for users who don't log in yet.
+        plaintext); leave it ``None`` for users who don't log in yet. An
+        invited user is created with ``email_verified=False`` and no password,
+        so it cannot sign in until the verification link is opened and a
+        password set.
         """
 
     @abstractmethod
@@ -72,12 +76,64 @@ class Storage(ABC):
         """Revoke ``role`` from the user and return the updated user."""
 
     @abstractmethod
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        username: str | None = None,
+        email: str | None = None,
+        roles: Sequence[RoleName] | None = None,
+    ) -> User:
+        """Update the editable fields of an existing user and return it.
+
+        Only the fields given are changed; ``None`` leaves a field untouched.
+        ``roles`` replaces the user's full role set (not a delta). Changing
+        ``email`` clears ``email_verified`` and any pending verification token,
+        since the address is the identity the invite link confirms. Raises
+        ``ValueError`` when no user with ``user_id`` exists.
+        """
+
+    @abstractmethod
+    def issue_verification_token(
+        self,
+        user_id: int,
+        *,
+        ttl_days: int = 7,
+    ) -> str:
+        """Generate and store a verification token for ``user_id``.
+
+        Returns the raw token (the only place it ever exists) and records its
+        hash plus an expiry ``ttl_days`` from now on the user. Re-issuing
+        overwrites any previous token. Raises ``ValueError`` when no user with
+        ``user_id`` exists.
+        """
+
+    @abstractmethod
+    def get_user_by_verification_token(self, token: str) -> User | None:
+        """Return the user whose pending token hashes to ``token``.
+
+        Returns ``None`` when the token is unknown, the user is already
+        verified, or the token has expired.
+        """
+
+    @abstractmethod
+    def complete_email_verification(self, user_id: int) -> User:
+        """Mark the user's email verified and clear its pending token.
+
+        Raises ``ValueError`` when no user with ``user_id`` exists.
+        """
+
+    @abstractmethod
     def set_password(self, user_id: int, password: str) -> User:
         """Set (or reset) the user's password hash and return the user."""
 
     @abstractmethod
     def verify_credentials(self, username: str, password: str) -> User | None:
-        """Return the user if ``password`` matches their stored hash, else ``None``."""
+        """Return the user if ``password`` matches their stored hash, else ``None``.
+
+        An unverified user (``email_verified=False``) never matches, so an
+        invited account can't sign in before opening the verification link.
+        """
 
     # --- tasks ---------------------------------------------------------------
 

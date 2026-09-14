@@ -56,3 +56,19 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(derived, expected)
     except (ValueError, TypeError):
         return False
+
+
+def hash_token(token: str) -> str:
+    """Return a one-way SHA-256 digest of an invite/verification token.
+
+    Unlike passwords, verification tokens are high-entropy random strings
+    (``secrets.token_urlsafe``), so a bare SHA-256 digest is enough — no salt
+    or key-stretching needed. The raw token only ever appears in the emailed
+    link; storage keeps this digest.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def verify_token(token: str, stored: str) -> bool:
+    """Return whether ``token`` hashes to ``stored`` (a ``hash_token`` value)."""
+    return hmac.compare_digest(hash_token(token), stored)

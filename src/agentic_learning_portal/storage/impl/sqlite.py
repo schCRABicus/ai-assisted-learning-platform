@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import getpass
 import os
+import secrets
 import socket
 import sqlite3
 import threading
 import uuid
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -27,7 +28,11 @@ from agentic_learning_portal.storage.models import (
     Task,
     User,
 )
-from agentic_learning_portal.storage.security import hash_password, verify_password
+from agentic_learning_portal.storage.security import (
+    hash_password,
+    hash_token,
+    verify_password,
+)
 
 # Where the versioned SQL migrations live (applied by yoyo on construction).
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
@@ -110,6 +115,7 @@ class _FileBackend(_FastLogMixin, SQLiteBackend):
 # ``_row_to_user`` splits it back into ``User.roles`` (sorted for determinism).
 _USER_SELECT = """
 SELECT u.id, u.username, u.email, u.password_hash, u.created_at,
+       u.email_verified, u.verification_token_hash, u.verification_expires_at,
        (SELECT GROUP_CONCAT(r.name, ',')
         FROM user_roles ur
         JOIN roles r ON r.id = ur.role_id
@@ -215,7 +221,10 @@ class SqliteStorage(Storage):
             username=row["username"],
             roles=roles,
             email=row["email"],
+            email_verified=bool(row["email_verified"]),
             password_hash=row["password_hash"],
+            verification_token_hash=row["verification_token_hash"],
+            verification_expires_at=row["verification_expires_at"],
             created_at=row["created_at"],
         )
 
@@ -256,6 +265,7 @@ class SqliteStorage(Storage):
         *,
         email: str | None = None,
         password: str | None = None,
+        email_verified: bool = True,
     ) -> User:
         role_names = [roles] if isinstance(roles, str) else list(roles)
         role_names = sorted(set(role_names))
@@ -265,9 +275,9 @@ class SqliteStorage(Storage):
             role_ids = [self._role_id(r) for r in role_names]
             password_hash = hash_password(password) if password else None
             cursor = self._conn.execute(
-                "INSERT INTO users (username, email, password_hash, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (username, email, password_hash, _now()),
+                "INSERT INTO users (username, email, password_hash, email_verified,"
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (username, email, password_hash, int(email_verified), _now()),
             )
             user_id = cursor.lastrowid
             for role_id in role_ids:
@@ -335,6 +345,101 @@ class SqliteStorage(Storage):
             self._conn.commit()
             return self.get_user(user_id)
 
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        username: str | None = None,
+        email: str | None = None,
+        roles: Sequence[RoleName] | None = None,
+    ) -> User:
+        """Update the editable fields of an existing user and return it."""
+        with self._lock:
+            current = self.get_user(user_id)
+            if current is None:
+                raise ValueError(f"No user with id {user_id}")
+            if username is not None:
+                self._conn.execute(
+                    "UPDATE users SET username = ? WHERE id = ?",
+                    (username, user_id),
+                )
+            if email is not None and email != current.email:
+                # A changed address is unverified again and any pending invite
+                # token no longer belongs to the new address.
+                self._conn.execute(
+                    "UPDATE users SET email = ?, email_verified = 0,"
+                    " verification_token_hash = NULL,"
+                    " verification_expires_at = NULL WHERE id = ?",
+                    (email, user_id),
+                )
+            if roles is not None:
+                role_ids = [self._role_id(r) for r in sorted(set(roles))]
+                self._conn.execute(
+                    "DELETE FROM user_roles WHERE user_id = ?", (user_id,)
+                )
+                for role_id in role_ids:
+                    self._conn.execute(
+                        "INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)",
+                        (user_id, role_id),
+                    )
+            self._conn.commit()
+            return self.get_user(user_id)
+
+    def issue_verification_token(
+        self,
+        user_id: int,
+        *,
+        ttl_days: int = 7,
+    ) -> str:
+        """Generate and store a verification token for ``user_id``."""
+        with self._lock:
+            if self.get_user(user_id) is None:
+                raise ValueError(f"No user with id {user_id}")
+            raw = secrets.token_urlsafe(32)
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
+            self._conn.execute(
+                "UPDATE users SET verification_token_hash = ?,"
+                " verification_expires_at = ? WHERE id = ?",
+                (hash_token(raw), expires_at, user_id),
+            )
+            self._conn.commit()
+            return raw
+
+    def get_user_by_verification_token(self, token: str) -> User | None:
+        """Return the user whose pending token hashes to ``token``."""
+        with self._lock:
+            row = self._conn.execute(
+                _USER_SELECT
+                + " WHERE u.verification_token_hash = ? AND u.email_verified = 0",
+                (hash_token(token),),
+            ).fetchone()
+        if row is None:
+            return None
+        user = self._row_to_user(row)
+        if user.verification_expires_at is None:
+            return None
+        try:
+            expires_at = datetime.fromisoformat(user.verification_expires_at)
+        except ValueError:
+            return None
+        if expires_at <= datetime.now(timezone.utc):
+            return None
+        return user
+
+    def complete_email_verification(self, user_id: int) -> User:
+        """Mark the user's email verified and clear its pending token."""
+        with self._lock:
+            if self.get_user(user_id) is None:
+                raise ValueError(f"No user with id {user_id}")
+            self._conn.execute(
+                "UPDATE users SET email_verified = 1,"
+                " verification_token_hash = NULL,"
+                " verification_expires_at = NULL WHERE id = ?",
+                (user_id,),
+            )
+            self._conn.commit()
+            return self.get_user(user_id)
+
     # --- passwords & credentials ---------------------------------------------
 
     def set_password(self, user_id: int, password: str) -> User:
@@ -350,9 +455,13 @@ class SqliteStorage(Storage):
             return self.get_user(user_id)
 
     def verify_credentials(self, username: str, password: str) -> User | None:
-        """Return the user if ``password`` matches their stored hash, else ``None``."""
+        """Return the user if ``password`` matches their stored hash, else ``None``.
+
+        An unverified user never matches, so an invited account can't sign in
+        before opening the verification link.
+        """
         user = self.get_user_by_username(username)
-        if user is None or not user.password_hash:
+        if user is None or not user.email_verified or not user.password_hash:
             return None
         if verify_password(password, user.password_hash):
             return user

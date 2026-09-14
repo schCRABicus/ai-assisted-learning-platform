@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from agentic_learning_portal.api.model import GeneratedTask
@@ -17,7 +18,11 @@ from agentic_learning_portal.storage.models import (
     Task,
     User,
 )
-from agentic_learning_portal.storage.security import hash_password, verify_password
+from agentic_learning_portal.storage.security import (
+    hash_password,
+    hash_token,
+    verify_password,
+)
 
 # The fixed set of roles every backend seeds (mirrors the 0001_initial
 # migration's ``INSERT INTO roles ...``).
@@ -151,6 +156,7 @@ class InMemoryStorage(Storage):
         *,
         email: str | None = None,
         password: str | None = None,
+        email_verified: bool = True,
     ) -> User:
         role_names = [roles] if isinstance(roles, str) else list(roles)
         role_names = sorted(set(role_names))
@@ -167,6 +173,7 @@ class InMemoryStorage(Storage):
                 username=username,
                 roles=role_names,
                 email=email,
+                email_verified=email_verified,
                 password_hash=hash_password(password) if password else None,
                 created_at=_now(),
             )
@@ -207,6 +214,90 @@ class InMemoryStorage(Storage):
             self._users[user_id] = user
             return user
 
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        username: str | None = None,
+        email: str | None = None,
+        roles: Sequence[RoleName] | None = None,
+    ) -> User:
+        """Update the editable fields of an existing user and return it."""
+        with self._lock:
+            user = self._get_user(user_id)
+            changes: dict[str, object] = {}
+            if username is not None:
+                changes["username"] = username
+            if email is not None and email != user.email:
+                # A changed address is unverified again and any pending invite
+                # token no longer belongs to the new address.
+                changes["email"] = email
+                changes["email_verified"] = False
+                changes["verification_token_hash"] = None
+                changes["verification_expires_at"] = None
+            if roles is not None:
+                [self._role_id(r) for r in roles]
+                changes["roles"] = sorted(set(roles))
+            if not changes:
+                return user
+            updated = user.model_copy(update=changes)
+            self._users[user_id] = updated
+            return updated
+
+    def issue_verification_token(
+        self,
+        user_id: int,
+        *,
+        ttl_days: int = 7,
+    ) -> str:
+        """Generate and store a verification token for ``user_id``."""
+        with self._lock:
+            user = self._get_user(user_id)
+            raw = secrets.token_urlsafe(32)
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
+            updated = user.model_copy(
+                update={
+                    "verification_token_hash": hash_token(raw),
+                    "verification_expires_at": expires_at,
+                }
+            )
+            self._users[user_id] = updated
+            return raw
+
+    def get_user_by_verification_token(self, token: str) -> User | None:
+        """Return the user whose pending token hashes to ``token``."""
+        with self._lock:
+            for user in self._users.values():
+                if (
+                    not user.email_verified
+                    and user.verification_token_hash is not None
+                    and user.verification_token_hash == hash_token(token)
+                ):
+                    if user.verification_expires_at is None:
+                        return None
+                    try:
+                        expires_at = datetime.fromisoformat(user.verification_expires_at)
+                    except ValueError:
+                        return None
+                    if expires_at <= datetime.now(timezone.utc):
+                        return None
+                    return user
+            return None
+
+    def complete_email_verification(self, user_id: int) -> User:
+        """Mark the user's email verified and clear its pending token."""
+        with self._lock:
+            user = self._get_user(user_id)
+            updated = user.model_copy(
+                update={
+                    "email_verified": True,
+                    "verification_token_hash": None,
+                    "verification_expires_at": None,
+                }
+            )
+            self._users[user_id] = updated
+            return updated
+
     # --- passwords & credentials ---------------------------------------------
 
     def set_password(self, user_id: int, password: str) -> User:
@@ -218,9 +309,13 @@ class InMemoryStorage(Storage):
             return user
 
     def verify_credentials(self, username: str, password: str) -> User | None:
-        """Return the user if ``password`` matches their stored hash, else ``None``."""
+        """Return the user if ``password`` matches their stored hash, else ``None``.
+
+        An unverified user never matches, so an invited account can't sign in
+        before opening the verification link.
+        """
         user = self.get_user_by_username(username)
-        if user is None or not user.password_hash:
+        if user is None or not user.email_verified or not user.password_hash:
             return None
         if verify_password(password, user.password_hash):
             return user

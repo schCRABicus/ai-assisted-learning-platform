@@ -738,6 +738,111 @@ def test_set_password_missing_user_raises() -> None:
         s.set_password(999, "x")
 
 
+# --- email verification ----------------------------------------------------------
+
+
+def test_create_user_unverified_cannot_sign_in() -> None:
+    s = _storage()
+    user = s.create_user("invitee", "student", email="i@example.com", email_verified=False)
+
+    assert user.email_verified is False
+    assert user.password_hash is None
+    assert s.verify_credentials("invitee", "anything") is None
+
+
+def test_issue_and_complete_verification_token() -> None:
+    s = _storage()
+    user = s.create_user("invitee", "student", email="i@example.com", email_verified=False)
+
+    token = s.issue_verification_token(user.id)
+
+    found = s.get_user_by_verification_token(token)
+    assert found is not None
+    assert found.id == user.id
+
+    s.complete_email_verification(user.id)
+    refreshed = s.get_user(user.id)
+    assert refreshed.email_verified is True
+    assert refreshed.verification_token_hash is None
+    assert refreshed.verification_expires_at is None
+    # The token is single-use: consumed, so it no longer resolves.
+    assert s.get_user_by_verification_token(token) is None
+
+
+def test_get_user_by_verification_token_rejects_unknown() -> None:
+    s = _storage()
+    s.create_user("invitee", "student", email="i@example.com", email_verified=False)
+
+    assert s.get_user_by_verification_token("bogus-token") is None
+
+
+def test_get_user_by_verification_token_ignores_verified_user() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", email="a@example.com")
+
+    token = s.issue_verification_token(user.id)
+
+    # A verified user never matches a token lookup.
+    assert s.get_user_by_verification_token(token) is None
+
+
+def test_verification_token_expires() -> None:
+    s = _storage()
+    user = s.create_user("invitee", "student", email="i@example.com", email_verified=False)
+
+    token = s.issue_verification_token(user.id, ttl_days=-1)  # already expired
+
+    assert s.get_user_by_verification_token(token) is None
+
+
+def test_update_user_changes_fields() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", email="a@example.com")
+
+    updated = s.update_user(user.id, username="alicia", roles=["student", "teacher"])
+
+    assert updated.username == "alicia"
+    assert updated.roles == ["student", "teacher"]
+    assert s.get_user(user.id).username == "alicia"
+
+
+def test_update_user_email_change_resets_verification() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", email="a@example.com", password="pw123")
+
+    assert s.verify_credentials("alice", "pw123") is not None
+
+    updated = s.update_user(user.id, email="new@example.com")
+
+    assert updated.email == "new@example.com"
+    assert updated.email_verified is False
+    assert updated.verification_token_hash is None
+    assert updated.verification_expires_at is None
+    # The account is unverified again, so it can't sign in until re-verified.
+    assert s.verify_credentials("alice", "pw123") is None
+
+
+def test_update_user_missing_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No user with id 999"):
+        s.update_user(999, username="nobody")
+
+
+def test_issue_verification_token_missing_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No user with id 999"):
+        s.issue_verification_token(999)
+
+
+def test_complete_email_verification_missing_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No user with id 999"):
+        s.complete_email_verification(999)
+
+
 # --- admin seeding from .env ----------------------------------------------------
 
 

@@ -27,10 +27,23 @@ class User(BaseModel):
         description="Roles the user holds; may be several (e.g. admin + teacher).",
     )
     email: str | None = Field(default=None, description="Optional email address.")
+    email_verified: bool = Field(
+        default=True,
+        description="Whether the email address was verified via the invite link.",
+    )
     password_hash: str | None = Field(
         default=None,
         repr=False,
         description="Salted scrypt hash of the login password, if set.",
+    )
+    verification_token_hash: str | None = Field(
+        default=None,
+        repr=False,
+        description="Hash of the pending invite/verification token, if any.",
+    )
+    verification_expires_at: str | None = Field(
+        default=None,
+        description="UTC ISO-8601 expiry of the pending verification token, if any.",
     )
     created_at: str = Field(..., description="UTC ISO-8601 creation timestamp.")
 
