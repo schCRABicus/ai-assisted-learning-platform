@@ -64,6 +64,14 @@ student = st.Page(
     icon="🧑‍🎓",
     url_path="student",
 )
+take_assignment = st.Page(
+    str(PAGES_DIR / "student_take.py"),
+    title="Take assignment",
+    icon="📝",
+    url_path="take_assignment",
+    default=False,
+    visibility="hidden",
+)
 
 # Show the signed-in user + Log out in the sidebar on every page. Pages guard
 # themselves (see ``auth.require_roles``), so this is cosmetic, not a gate.
@@ -71,7 +79,7 @@ render_sidebar_user()
 
 pg = st.navigation({
     "Admin": [admin, assignments, assignment_editor, users],
-    "Student": [student, verify]
+    "Student": [student, take_assignment, verify]
 })
 pg.run()
 

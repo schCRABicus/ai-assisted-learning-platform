@@ -1,4 +1,5 @@
 from .generator import MathProblemGenerator
+from .grading import grade_attempt
 from .judges import build_judge_ensemble
 from .wa_judge import WolframAlphaJudge
 from .model import MathProblemGenerationPromptInput
@@ -10,4 +11,5 @@ __all__ = [
     "WolframAlphaJudge",
     "QwenMathJudge",
     "build_judge_ensemble",
+    "grade_attempt",
 ]

@@ -284,3 +284,86 @@ def test_delete_last_assignment_shows_empty_state(portal_env) -> None:
     assert not at.exception
     assert get_storage().get_assignment(a1.id) is None
     assert any("No assignments yet" in info.value for info in at.info)
+
+
+# --- new results panel --------------------------------------------------------
+
+
+def _panel_text(at: AppTest) -> str:
+    """Flatten the page's markdown + captions, where the panel renders."""
+    return "\n".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+
+
+def test_new_results_panel_reports_a_submission(portal_env) -> None:
+    """A graded attempt the admin hasn't looked at shows up in the panel."""
+    _, _, attempt = _seed_assignment(title="Algebra HW")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login(at)
+
+    assert not at.exception
+    assert any("📥 New results (1)" in s.value for s in at.subheader)
+    text = _panel_text(at)
+    assert "**Algebra HW**" in text
+    assert "Score 1/1" in text
+    assert any(b.key == f"seen_{attempt.id}" for b in at.button)
+    assert any(b.key == f"open_{attempt.id}" for b in at.button)
+
+
+def test_new_results_panel_hidden_without_submissions(portal_env) -> None:
+    """No completed attempt means no panel at all."""
+    _seed_assignment(title="Untaken", with_attempt=False)
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login(at)
+
+    assert not at.exception
+    assert not any("New results" in s.value for s in at.subheader)
+
+
+def test_new_results_panel_hidden_for_an_attempt_in_progress(portal_env) -> None:
+    """An attempt that hasn't been submitted isn't a result yet."""
+    assignment, task, _ = _seed_assignment(title="Ongoing", with_attempt=False)
+    storage = get_storage()
+    storage.start_attempt(assignment.id, storage.get_user_by_username("boss").id)
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login(at)
+
+    assert not at.exception
+    assert not any("New results" in s.value for s in at.subheader)
+
+
+def test_mark_as_seen_clears_the_panel_entry(portal_env) -> None:
+    """👁 Mark as seen records the view and drops the entry from the panel."""
+    _, _, attempt = _seed_assignment(title="Algebra HW")
+
+    at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+    at.run()
+    _login(at)
+    at.button(key=f"seen_{attempt.id}").click().run()
+
+    assert not at.exception
+    assert get_storage().get_attempt(attempt.id).results_seen is True  # type: ignore[union-attr]
+    assert not any("New results" in s.value for s in at.subheader)
+    # The assignment itself is still listed.
+    assert any("### Algebra HW" in m.value for m in at.markdown)
+
+
+def test_panel_open_button_goes_to_the_editor_for_that_assignment(portal_env) -> None:
+    """✏️ Open passes the attempt's assignment to the editor page."""
+    assignment, _, attempt = _seed_assignment(title="Algebra HW")
+
+    editor_page = str(ASSIGNMENTS_PAGE.parent / "02_assignment_editor.py")
+    with patch("streamlit.switch_page") as switch:
+        at = AppTest.from_file(str(ASSIGNMENTS_PAGE), default_timeout=10)
+        at.run()
+        _login(at)
+        at.button(key=f"open_{attempt.id}").click().run()
+
+    assert not at.exception
+    assert at.session_state["edit_assignment_id"] == assignment.id
+    switch.assert_called_once_with(editor_page)

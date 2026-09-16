@@ -726,6 +726,19 @@ class SqliteStorage(Storage):
             )
             self._conn.commit()
 
+    def grant_extra_attempt(self, assignment_id: int) -> Assignment:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE assignments SET extra_attempts = extra_attempts + 1"
+                " WHERE id = ?",
+                (assignment_id,),
+            )
+            self._conn.commit()
+        assignment = self.get_assignment(assignment_id)
+        if assignment is None:
+            raise ValueError(f"No assignment with id {assignment_id}")
+        return assignment
+
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         with self._lock:
             rows = self._conn.execute(
@@ -815,6 +828,7 @@ class SqliteStorage(Storage):
         *,
         student_id: int | None = None,
         assignment_id: int | None = None,
+        results_seen: bool | None = None,
     ) -> list[Attempt]:
         sql = "SELECT * FROM attempts"
         clauses: list[str] = []
@@ -825,12 +839,28 @@ class SqliteStorage(Storage):
         if assignment_id is not None:
             clauses.append("assignment_id = ?")
             params.append(assignment_id)
+        if results_seen is not None:
+            clauses.append("results_seen = ?")
+            params.append(int(results_seen))
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY id"
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [Attempt(**dict(r)) for r in rows]
+
+    def mark_results_seen(self, attempt_id: int) -> Attempt:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE attempts SET results_seen = 1 WHERE id = ?", (attempt_id,)
+            )
+            row = self._conn.execute(
+                "SELECT * FROM attempts WHERE id = ?", (attempt_id,)
+            ).fetchone()
+            self._conn.commit()
+        if row is None:
+            raise ValueError(f"No attempt with id {attempt_id}")
+        return Attempt(**dict(row))
 
     # --- results -------------------------------------------------------------
 
@@ -845,12 +875,22 @@ class SqliteStorage(Storage):
         score: float | None = None,
         detail: str = "",
     ) -> AttemptResult:
+        # Upsert on (attempt_id, task_id) — saving progress and later grading go
+        # through the same row, so a re-save overwrites instead of appending.
+        # The row is re-read by key rather than by ``lastrowid``, which is not
+        # meaningful on the DO UPDATE branch.
         with self._lock:
-            cursor = self._conn.execute(
+            self._conn.execute(
                 "INSERT INTO attempt_results"
                 " (attempt_id, task_id, given_answer, expected_answer, is_correct,"
                 "  score, detail)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(attempt_id, task_id) DO UPDATE SET"
+                "  given_answer = excluded.given_answer,"
+                "  expected_answer = excluded.expected_answer,"
+                "  is_correct = excluded.is_correct,"
+                "  score = excluded.score,"
+                "  detail = excluded.detail",
                 (
                     attempt_id,
                     task_id,
@@ -862,7 +902,8 @@ class SqliteStorage(Storage):
                 ),
             )
             row = self._conn.execute(
-                "SELECT * FROM attempt_results WHERE id = ?", (cursor.lastrowid,)
+                "SELECT * FROM attempt_results WHERE attempt_id = ? AND task_id = ?",
+                (attempt_id, task_id),
             ).fetchone()
             self._conn.commit()
         return self._row_to_result(row)

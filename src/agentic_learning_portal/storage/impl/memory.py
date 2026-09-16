@@ -511,6 +511,12 @@ class InMemoryStorage(Storage):
             if assignment is not None:
                 assignment.assigned_to = assign_to
 
+    def grant_extra_attempt(self, assignment_id: int) -> Assignment:
+        with self._lock:
+            assignment = self._get_assignment(assignment_id)
+            assignment.extra_attempts += 1
+        return self._with_tasks(assignment)
+
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         with self._lock:
             links = sorted(
@@ -573,6 +579,7 @@ class InMemoryStorage(Storage):
         *,
         student_id: int | None = None,
         assignment_id: int | None = None,
+        results_seen: bool | None = None,
     ) -> list[Attempt]:
         with self._lock:
             attempts = sorted(self._attempts.values(), key=lambda a: a.id)
@@ -580,7 +587,16 @@ class InMemoryStorage(Storage):
                 attempts = [a for a in attempts if a.student_id == student_id]
             if assignment_id is not None:
                 attempts = [a for a in attempts if a.assignment_id == assignment_id]
+            if results_seen is not None:
+                attempts = [a for a in attempts if a.results_seen == results_seen]
             return attempts
+
+    def mark_results_seen(self, attempt_id: int) -> Attempt:
+        with self._lock:
+            attempt = self._get_attempt(attempt_id)
+            attempt = attempt.model_copy(update={"results_seen": True})
+            self._attempts[attempt_id] = attempt
+            return attempt
 
     # --- results -------------------------------------------------------------
 
@@ -598,8 +614,19 @@ class InMemoryStorage(Storage):
         with self._lock:
             self._get_attempt(attempt_id)
             self._get_task(task_id)
-            result_id = self._next_result_id
-            self._next_result_id += 1
+            # Upsert on (attempt_id, task_id): saving progress and later grading
+            # share one row per task, so a re-save overwrites rather than appends.
+            existing = next(
+                (
+                    key
+                    for key, r in self._attempt_results.items()
+                    if r.attempt_id == attempt_id and r.task_id == task_id
+                ),
+                None,
+            )
+            result_id = existing if existing is not None else self._next_result_id
+            if existing is None:
+                self._next_result_id += 1
             result = AttemptResult(
                 id=result_id,
                 attempt_id=attempt_id,

@@ -123,6 +123,13 @@ class Assignment(BaseModel):
         default=None,
         description="Id of the student the assignment targets, if any.",
     )
+    extra_attempts: int = Field(
+        default=0,
+        description=(
+            "Additional attempts granted by the admin on top of the first one; "
+            "a student may hold at most ``1 + extra_attempts`` attempts."
+        ),
+    )
     created_at: str = Field(..., description="UTC ISO-8601 creation timestamp.")
     tasks: LazyTaskList = Field(
         default_factory=lambda: LazyTaskList(0, lambda: []),
@@ -141,6 +148,10 @@ class Attempt(BaseModel):
     completed_at: str | None = Field(
         default=None,
         description="UTC ISO-8601 completion timestamp, when completed.",
+    )
+    results_seen: bool = Field(
+        default=False,
+        description="Whether the admin has viewed this attempt's graded results.",
     )
 
 

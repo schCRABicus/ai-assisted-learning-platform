@@ -228,6 +228,16 @@ class Storage(ABC):
         """Assign the specified assignment to ``assign_to``, or ``None`` if missing."""
 
     @abstractmethod
+    def grant_extra_attempt(self, assignment_id: int) -> Assignment:
+        """Grant one more attempt on the assignment and return the updated assignment.
+
+        Increments ``extra_attempts``, raising the student's entitlement to
+        ``1 + extra_attempts`` attempts. Nothing is decremented when the extra
+        attempt is used, so the entitlement can't drift. Raises ``ValueError``
+        when no assignment with ``assignment_id`` exists.
+        """
+
+    @abstractmethod
     def list_assignment_tasks(self, assignment_id: int) -> list[Task]:
         """Return the tasks of an assignment in order."""
 
@@ -260,8 +270,21 @@ class Storage(ABC):
         *,
         student_id: int | None = None,
         assignment_id: int | None = None,
+        results_seen: bool | None = None,
     ) -> list[Attempt]:
-        """Return attempts, optionally filtered by student or assignment."""
+        """Return attempts, optionally filtered by student, assignment, or seen state.
+
+        ``results_seen`` narrows to attempts whose graded results the admin has
+        (``True``) or hasn't (``False``) looked at yet — the "new results" panel
+        asks for ``False``.
+        """
+
+    @abstractmethod
+    def mark_results_seen(self, attempt_id: int) -> Attempt:
+        """Mark the attempt's graded results as seen by the admin, and return it.
+
+        Raises ``ValueError`` when no attempt with ``attempt_id`` exists.
+        """
 
     # --- results -------------------------------------------------------------
 
@@ -277,7 +300,13 @@ class Storage(ABC):
         score: float | None = None,
         detail: str = "",
     ) -> AttemptResult:
-        """Record a scored answer for one task of an attempt."""
+        """Record an answer for one task of an attempt, replacing any previous one.
+
+        A student saves progress and is later graded through the same call, so
+        the write is an upsert on ``(attempt_id, task_id)``: at most one row
+        exists per task per attempt, and a second call overwrites it (grading
+        fields included) rather than appending a duplicate.
+        """
 
     @abstractmethod
     def list_results(

@@ -24,8 +24,14 @@ from pathlib import Path
 import streamlit as st
 
 from agentic_learning_portal.admin.formatting import latex_to_plain_text
+from agentic_learning_portal.assignment import (
+    COMPLETED,
+    format_timestamp,
+    score_line,
+    username,
+)
 from agentic_learning_portal.auth import get_storage, require_roles
-from agentic_learning_portal.storage import Task
+from agentic_learning_portal.storage import Assignment, Attempt, Storage, Task
 from agentic_learning_portal.views.components.create_task_dialog import (
     create_task_dialog,
 )
@@ -88,6 +94,71 @@ def _render_task_slide(task: Task, index: int, total: int) -> None:
         help="Remove this task from the assignment.",
     ):
         _open_task_dialog("remove_task_open", task.id)
+
+
+def _render_attempt_detail(
+    storage: Storage, attempt: Attempt, tasks: dict[int, Task]
+) -> None:
+    """Render one attempt's per-task given-vs-expected breakdown."""
+    for result in storage.list_results(attempt_id=attempt.id):
+        task = tasks.get(result.task_id)
+        label = f"**{task.topic}**" if task is not None else f"**task #{result.task_id}** (removed)"
+        if result.is_correct is None:
+            verdict = "⏳"  # Saved but not graded yet — the attempt is in progress.
+        else:
+            verdict = "✅" if result.is_correct else "❌"
+        st.markdown(
+            f"{verdict} {label} — given `{result.given_answer or '—'}`"
+            f" · expected `{result.expected_answer or '—'}`"
+        )
+
+
+def _render_attempts_section(storage: Storage, assignment: Assignment) -> None:
+    """Render the assignment's attempts, newest first, plus the retake control.
+
+    This is where the admin reviews a submission: each attempt expands to the
+    per-task answers and verdicts. **🔁 Allow another attempt** grants one more
+    (``storage.grant_extra_attempt``), which lets the student open a fresh,
+    blank attempt while the graded ones stay on record.
+    """
+    attempts = storage.list_attempts(assignment_id=assignment.id)
+    st.markdown("### 📥 Attempts")
+    if not attempts:
+        st.caption("No attempts yet — results appear here once the student submits.")
+        return
+
+    tasks = {t.id: t for t in storage.list_assignment_tasks(assignment.id)}
+    for attempt in reversed(attempts):
+        completed = attempt.status == COMPLETED
+        header = f"{username(storage, attempt.student_id)} — "
+        header += "Completed" if completed else "In progress"
+        if completed:
+            header += f" — {score_line(storage, attempt)}"
+            if not attempt.results_seen:
+                header += " · 🆕 new"
+        with st.expander(header):
+            st.caption(
+                f"Attempt #{attempt.id}"
+                f" · started {format_timestamp(attempt.started_at)}"
+                f" · completed {format_timestamp(attempt.completed_at)}"
+            )
+            _render_attempt_detail(storage, attempt, tasks)
+
+    has_completed = any(a.status == COMPLETED for a in attempts)
+    col_grant, col_count = st.columns([1, 2], vertical_alignment="center")
+    with col_grant:
+        if st.button(
+            "🔁 Allow another attempt",
+            key="editor_grant_attempt",
+            use_container_width=True,
+            disabled=not has_completed,
+            help="Lets the student take this assignment again from a blank attempt.",
+        ):
+            get_storage().grant_extra_attempt(assignment.id)
+            st.rerun()
+    with col_count:
+        st.caption(f"Extra attempts granted: **{assignment.extra_attempts}**")
+    st.markdown("---")
 
 
 @require_roles("admin", "teacher")
@@ -161,6 +232,8 @@ def render_assignment_editor_page() -> None:
         placeholder="Select student to assign to...",
         on_change=on_assigned_to_change,
     )
+
+    _render_attempts_section(storage, assignment)
 
     tasks = storage.list_assignment_tasks(assignment_id)
 

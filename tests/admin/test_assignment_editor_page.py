@@ -17,7 +17,7 @@ from streamlit.testing.v1 import AppTest
 
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.auth import get_storage
-from agentic_learning_portal.domains.math import MathProblemGenerator
+from agentic_learning_portal.domains.math import MathProblemGenerator, grade_attempt
 
 EDITOR_PAGE = (
     Path(__file__).resolve().parents[2]
@@ -467,3 +467,125 @@ def test_remove_shared_task_keeps_it_for_other_assignment(portal_env) -> None:
     assert get_storage().get_task(tasks[0].id) is not None
     assert get_storage().list_assignment_tasks(a1.id) == []
     assert [t.id for t in get_storage().list_assignment_tasks(a2.id)] == [tasks[0].id]
+
+
+# --- attempts -----------------------------------------------------------------
+
+
+def _seed_attempt(assignment_id: int, *, student_id: int, answers: dict[int, str]):
+    """Take and submit ``assignment_id`` as ``student_id``, grading ``answers``.
+
+    ``answers`` maps a task id to the answer to submit; tasks left out are
+    submitted blank.
+    """
+    storage = get_storage()
+    attempt = storage.start_attempt(assignment_id, student_id)
+    for task_id, answer in answers.items():
+        storage.record_result(attempt.id, task_id, given_answer=answer)
+    grade_attempt(storage, attempt.id)
+    return storage.complete_attempt(attempt.id)
+
+
+def test_editor_lists_no_attempts_yet(portal_env) -> None:
+    """An untaken assignment shows the attempts section's empty caption."""
+    assignment, _ = _seed_assignment()
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    assert any("### 📥 Attempts" in m.value for m in at.markdown)
+    assert any("No attempts yet" in c.value for c in at.caption)
+    # Nothing to grant a retake for yet, so the control isn't offered at all.
+    assert not any(b.key == "editor_grant_attempt" for b in at.button)
+
+
+def test_editor_shows_attempt_breakdown(portal_env) -> None:
+    """A submitted attempt expands to its per-task given-vs-expected verdicts."""
+    assignment, tasks = _seed_assignment(n_tasks=2)
+    student = get_storage().create_user("pupil", "student")
+    attempt = _seed_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "Answer 1", tasks[1].id: "wrong"},
+    )
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    headers = [e.label for e in at.expander]
+    assert any("pupil — Completed — 1/2" in h for h in headers)
+    assert any("🆕 new" in h for h in headers)
+
+    marks = [m.value for m in at.markdown]
+    assert any("✅ **Topic 1** — given `Answer 1` · expected `Answer 1`" in m for m in marks)
+    assert any("❌ **Topic 2** — given `wrong` · expected `Answer 2`" in m for m in marks)
+    assert any("Attempt #" in c.value and "started" in c.value for c in at.caption)
+
+
+def test_editor_marks_in_progress_attempt_without_score(portal_env) -> None:
+    """An attempt still in progress is labelled as such and shows no score."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt = get_storage().start_attempt(assignment.id, student.id)
+    get_storage().record_result(attempt.id, tasks[0].id, given_answer="Answer 1")
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    headers = [e.label for e in at.expander]
+    assert any("pupil — In progress" in h for h in headers)
+    assert not any("Completed" in h for h in headers)
+    # Ungraded rows read as pending rather than wrong.
+    assert any("⏳ **Topic 1**" in m.value for m in at.markdown)
+    assert at.button(key="editor_grant_attempt").disabled
+
+
+def test_editor_grant_attempt_button_allows_a_retake(portal_env) -> None:
+    """🔁 Allow another attempt increments the assignment's extra attempts."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    _seed_attempt(assignment.id, student_id=student.id, answers={tasks[0].id: "Answer 1"})
+
+    at = _open_editor(assignment.id)
+    assert not at.button(key="editor_grant_attempt").disabled
+
+    at.button(key="editor_grant_attempt").click().run()
+
+    assert not at.exception
+    assert get_storage().get_assignment(assignment.id).extra_attempts == 1
+    assert any("Extra attempts granted: **1**" in c.value for c in at.caption)
+
+    # Clicking again stacks a second attempt entitlement.
+    at.button(key="editor_grant_attempt").click().run()
+    assert get_storage().get_assignment(assignment.id).extra_attempts == 2
+
+
+def test_editor_grant_attempt_button_disabled_before_first_submission(portal_env) -> None:
+    """A retake can't be granted before the student has submitted anything."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    get_storage().start_attempt(assignment.id, student.id)  # in progress only
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    assert at.button(key="editor_grant_attempt").disabled
+    assert get_storage().get_assignment(assignment.id).extra_attempts == 0
+
+
+def test_editor_attempts_are_newest_first(portal_env) -> None:
+    """The section lists the newest attempt first."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    _seed_attempt(assignment.id, student_id=student.id, answers={tasks[0].id: "Answer 1"})
+    get_storage().grant_extra_attempt(assignment.id)
+    _seed_attempt(assignment.id, student_id=student.id, answers={tasks[0].id: "nope"})
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    headers = [e.label for e in at.expander]
+    assert len(headers) == 2
+    # Scores newest-first: 0/1 (the wrong retake) then 1/1 (the first attempt).
+    assert "0/1" in headers[0]
+    assert "1/1" in headers[1]

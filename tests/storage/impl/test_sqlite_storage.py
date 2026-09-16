@@ -629,6 +629,84 @@ def test_list_attempts_filters() -> None:
     assert [a.id for a in s.list_attempts()] == [attempt1.id, attempt2.id]
 
 
+def test_new_attempt_starts_with_no_results_seen_flag() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Practice", teacher.id, assigned_to=student.id)
+
+    attempt = s.start_attempt(assignment.id, student.id)
+
+    assert attempt.results_seen is False
+
+
+def test_mark_results_seen() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Practice", teacher.id, assigned_to=student.id)
+    attempt = s.start_attempt(assignment.id, student.id)
+
+    seen = s.mark_results_seen(attempt.id)
+
+    assert seen.results_seen is True
+    assert s.get_attempt(attempt.id).results_seen is True  # type: ignore[union-attr]
+
+
+def test_mark_results_seen_missing_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No attempt"):
+        s.mark_results_seen(999)
+
+
+def test_list_attempts_filters_unseen_results() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Practice", teacher.id, assigned_to=student.id)
+    attempt = s.start_attempt(assignment.id, student.id)
+
+    assert [a.id for a in s.list_attempts(results_seen=False)] == [attempt.id]
+    assert s.list_attempts(results_seen=True) == []
+
+    s.mark_results_seen(attempt.id)
+
+    assert s.list_attempts(results_seen=False) == []
+    assert [a.id for a in s.list_attempts(results_seen=True)] == [attempt.id]
+    assert [a.id for a in s.list_attempts()] == [attempt.id]  # no filter, unaffected
+
+
+# --- extra attempts -----------------------------------------------------------
+
+
+def test_extra_attempts_default_to_zero() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+
+    assignment = s.create_assignment("Practice", teacher.id, assigned_to=student.id)
+
+    assert assignment.extra_attempts == 0
+
+
+def test_grant_extra_attempt_increments_entitlement() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Practice", teacher.id, assigned_to=student.id)
+
+    granted = s.grant_extra_attempt(assignment.id)
+
+    assert granted.extra_attempts == 1
+    assert s.get_assignment(assignment.id).extra_attempts == 1  # type: ignore[union-attr]
+
+    # Granting again stacks, and nothing is ever decremented.
+    assert s.grant_extra_attempt(assignment.id).extra_attempts == 2
+
+
+def test_grant_extra_attempt_missing_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No assignment"):
+        s.grant_extra_attempt(999)
+
+
 # --- results ------------------------------------------------------------------
 
 
@@ -674,6 +752,50 @@ def test_record_result_null_grading_fields() -> None:
     assert result.is_correct is None
     assert result.score is None
     assert result.expected_answer is None
+
+
+def test_record_result_upserts_one_row_per_task() -> None:
+    """Saving progress repeatedly updates the task's row instead of appending."""
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Graded", teacher.id, assigned_to=student.id)
+    task = s.create_task(_task())
+    attempt = s.start_attempt(assignment.id, student.id)
+
+    saved = s.record_result(attempt.id, task.id, given_answer="1")
+    graded = s.record_result(
+        attempt.id,
+        task.id,
+        given_answer="12",
+        expected_answer="12",
+        is_correct=True,
+        score=1.0,
+    )
+
+    assert graded.id == saved.id
+    results = s.list_results(attempt_id=attempt.id)
+    assert len(results) == 1
+    assert results[0].given_answer == "12"
+    assert results[0].is_correct is True
+    assert results[0].score == 1.0
+
+
+def test_record_result_keeps_tasks_and_attempts_apart() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Graded", teacher.id, assigned_to=student.id)
+    first = s.create_task(_task(text="Question one?"))
+    second = s.create_task(_task(text="Question two?"))
+    attempt = s.start_attempt(assignment.id, student.id)
+    retake = s.start_attempt(assignment.id, student.id)
+
+    s.record_result(attempt.id, first.id, given_answer="1")
+    s.record_result(attempt.id, second.id, given_answer="2")
+    s.record_result(retake.id, first.id, given_answer="3")
+
+    assert len(s.list_results(attempt_id=attempt.id)) == 2
+    # The same task answered in a later attempt is its own row, not an update.
+    assert [r.given_answer for r in s.list_results(attempt_id=retake.id)] == ["3"]
 
 
 # --- passwords & credentials ---------------------------------------------------
