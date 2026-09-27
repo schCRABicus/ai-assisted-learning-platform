@@ -870,6 +870,7 @@ class SqliteStorage(Storage):
         task_id: int,
         *,
         given_answer: str | None = None,
+        given_solution: str | None = None,
         expected_answer: str | None = None,
         is_correct: bool | None = None,
         score: float | None = None,
@@ -879,22 +880,31 @@ class SqliteStorage(Storage):
         # through the same row, so a re-save overwrites instead of appending.
         # The row is re-read by key rather than by ``lastrowid``, which is not
         # meaningful on the DO UPDATE branch.
+        #
+        # ``score_adjusted`` is reset on the update branch: this call writes the
+        # student's own work and an automatic grade, which by definition is not a
+        # manual override. A fresh insert takes the column default (0). Callers
+        # that re-write a row to grade it must pass the saved ``given_solution``
+        # back in, since every column is overwritten here.
         with self._lock:
             self._conn.execute(
                 "INSERT INTO attempt_results"
-                " (attempt_id, task_id, given_answer, expected_answer, is_correct,"
-                "  score, detail)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " (attempt_id, task_id, given_answer, given_solution, expected_answer,"
+                "  is_correct, score, detail)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(attempt_id, task_id) DO UPDATE SET"
                 "  given_answer = excluded.given_answer,"
+                "  given_solution = excluded.given_solution,"
                 "  expected_answer = excluded.expected_answer,"
                 "  is_correct = excluded.is_correct,"
                 "  score = excluded.score,"
-                "  detail = excluded.detail",
+                "  detail = excluded.detail,"
+                "  score_adjusted = 0",
                 (
                     attempt_id,
                     task_id,
                     given_answer,
+                    given_solution,
                     expected_answer,
                     int(is_correct) if is_correct is not None else None,
                     score,
@@ -906,6 +916,44 @@ class SqliteStorage(Storage):
                 (attempt_id, task_id),
             ).fetchone()
             self._conn.commit()
+        return self._row_to_result(row)
+
+    def adjust_result(
+        self,
+        attempt_id: int,
+        task_id: int,
+        *,
+        is_correct: bool,
+        score: float,
+    ) -> AttemptResult:
+        # Only the grading fields are written — the student's answer and working
+        # are deliberately absent from this statement, so a manual override can
+        # never erase them. A missing row is detected by re-reading: an UPDATE
+        # that matches nothing reports no error on its own.
+        if not 0.0 <= score <= 1.0:
+            raise ValueError(f"Score must be between 0 and 1, got {score}")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE attempt_results"
+                " SET is_correct = ?, score = ?, detail = ?, score_adjusted = 1"
+                " WHERE attempt_id = ? AND task_id = ?",
+                (
+                    int(is_correct),
+                    score,
+                    "Manually graded as correct."
+                    if is_correct
+                    else "Manually graded as incorrect.",
+                    attempt_id,
+                    task_id,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM attempt_results WHERE attempt_id = ? AND task_id = ?",
+                (attempt_id, task_id),
+            ).fetchone()
+            self._conn.commit()
+        if row is None:
+            raise ValueError(f"No result for task {task_id} in attempt {attempt_id}")
         return self._row_to_result(row)
 
     def list_results(
@@ -937,10 +985,12 @@ class SqliteStorage(Storage):
             attempt_id=row["attempt_id"],
             task_id=row["task_id"],
             given_answer=row["given_answer"],
+            given_solution=row["given_solution"],
             expected_answer=row["expected_answer"],
             is_correct=(
                 bool(row["is_correct"]) if row["is_correct"] is not None else None
             ),
             score=row["score"],
             detail=row["detail"],
+            score_adjusted=bool(row["score_adjusted"]),
         )

@@ -606,6 +606,7 @@ class InMemoryStorage(Storage):
         task_id: int,
         *,
         given_answer: str | None = None,
+        given_solution: str | None = None,
         expected_answer: str | None = None,
         is_correct: bool | None = None,
         score: float | None = None,
@@ -616,6 +617,10 @@ class InMemoryStorage(Storage):
             self._get_task(task_id)
             # Upsert on (attempt_id, task_id): saving progress and later grading
             # share one row per task, so a re-save overwrites rather than appends.
+            # ``score_adjusted`` is reset because this call writes the student's
+            # own work and an automatic grade — never a manual override. Callers
+            # that re-write a row to grade it must pass the saved
+            # ``given_solution`` back in, since every field is overwritten here.
             existing = next(
                 (
                     key
@@ -632,12 +637,55 @@ class InMemoryStorage(Storage):
                 attempt_id=attempt_id,
                 task_id=task_id,
                 given_answer=given_answer,
+                given_solution=given_solution,
                 expected_answer=expected_answer,
                 is_correct=is_correct,
                 score=score,
                 detail=detail,
+                score_adjusted=False,
             )
             self._attempt_results[result_id] = result
+            return result
+
+    def adjust_result(
+        self,
+        attempt_id: int,
+        task_id: int,
+        *,
+        is_correct: bool,
+        score: float,
+    ) -> AttemptResult:
+        if not 0.0 <= score <= 1.0:
+            raise ValueError(f"Score must be between 0 and 1, got {score}")
+        with self._lock:
+            key = next(
+                (
+                    key
+                    for key, r in self._attempt_results.items()
+                    if r.attempt_id == attempt_id and r.task_id == task_id
+                ),
+                None,
+            )
+            if key is None:
+                raise ValueError(
+                    f"No result for task {task_id} in attempt {attempt_id}"
+                )
+            # ``model_copy`` keeps every field not named here — above all the
+            # student's ``given_answer`` and ``given_solution``, which a manual
+            # override must never touch.
+            result = self._attempt_results[key].model_copy(
+                update={
+                    "is_correct": is_correct,
+                    "score": score,
+                    "detail": (
+                        "Manually graded as correct."
+                        if is_correct
+                        else "Manually graded as incorrect."
+                    ),
+                    "score_adjusted": True,
+                }
+            )
+            self._attempt_results[key] = result
             return result
 
     def list_results(

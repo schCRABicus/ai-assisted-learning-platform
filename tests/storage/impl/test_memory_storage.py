@@ -883,6 +883,181 @@ def test_record_result_keeps_tasks_and_attempts_apart() -> None:
     assert [r.given_answer for r in s.list_results(attempt_id=retake.id)] == ["3"]
 
 
+# --- solutions & score adjustment ----------------------------------------------
+
+
+def _graded_row(
+    s: InMemoryStorage,
+    *,
+    given_answer: str = "12",
+    given_solution: str | None = "3 × 4 = 12",
+    correct: bool = True,
+):
+    """Record one graded result row; returns ``(attempt, task, result)``."""
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Graded", teacher.id, assigned_to=student.id)
+    task = s.create_task(_task())
+    attempt = s.start_attempt(assignment.id, student.id)
+    result = s.record_result(
+        attempt.id,
+        task.id,
+        given_answer=given_answer,
+        given_solution=given_solution,
+        expected_answer="12",
+        is_correct=correct,
+        score=1.0 if correct else 0.0,
+        detail="Correct." if correct else "Incorrect.",
+    )
+    return attempt, task, result
+
+
+def test_record_result_round_trips_the_solution() -> None:
+    """The student's working survives a save and comes back on a read."""
+    s = _storage()
+    attempt, _, _ = _graded_row(s, given_solution="3 × 4 = 12")
+
+    # Asserted after a read rather than on the returned row: the column is
+    # mapped again on the way out, so a missing mapping would hide there.
+    assert s.list_results(attempt_id=attempt.id)[0].given_solution == "3 × 4 = 12"
+
+
+def test_record_result_defaults_the_solution_to_none() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Graded", teacher.id, assigned_to=student.id)
+    task = s.create_task(_task())
+    attempt = s.start_attempt(assignment.id, student.id)
+
+    s.record_result(attempt.id, task.id, given_answer="12")
+
+    assert s.list_results(attempt_id=attempt.id)[0].given_solution is None
+
+
+def test_record_result_can_clear_the_solution() -> None:
+    """Clearing the box and saving really clears it — it is not sticky."""
+    s = _storage()
+    attempt, task, _ = _graded_row(s, given_solution="some working")
+
+    s.record_result(attempt.id, task.id, given_answer="12", given_solution=None)
+
+    assert s.list_results(attempt_id=attempt.id)[0].given_solution is None
+
+
+def test_results_start_unadjusted() -> None:
+    s = _storage()
+    attempt, _, _ = _graded_row(s)
+
+    assert s.list_results(attempt_id=attempt.id)[0].score_adjusted is False
+
+
+def test_adjust_result_overrides_verdict_and_score() -> None:
+    s = _storage()
+    attempt, task, _ = _graded_row(s, correct=True)
+
+    adjusted = s.adjust_result(attempt.id, task.id, is_correct=False, score=0.5)
+
+    assert adjusted.is_correct is False
+    assert adjusted.score == 0.5
+    assert adjusted.score_adjusted is True
+    assert adjusted.detail == "Manually graded as incorrect."
+
+
+def test_adjust_result_leaves_the_students_work_alone() -> None:
+    """An override writes the grade only — never the answer or the working."""
+    s = _storage()
+    attempt, task, _ = _graded_row(s, given_answer="11", given_solution="3 + 4 = 11")
+
+    adjusted = s.adjust_result(attempt.id, task.id, is_correct=True, score=0.75)
+
+    assert adjusted.given_answer == "11"
+    assert adjusted.given_solution == "3 + 4 = 11"
+    assert adjusted.expected_answer == "12"
+
+
+def test_adjust_result_persists() -> None:
+    s = _storage()
+    attempt, task, _ = _graded_row(s)
+
+    s.adjust_result(attempt.id, task.id, is_correct=True, score=0.25)
+
+    stored = s.list_results(attempt_id=attempt.id)[0]
+    assert stored.is_correct is True
+    assert stored.score == 0.25
+    assert stored.score_adjusted is True
+
+
+def test_adjust_result_rewrites_the_detail_to_match_the_verdict() -> None:
+    """A row flipped to correct must not still read "Incorrect."."""
+    s = _storage()
+    attempt, task, _ = _graded_row(s, correct=False)
+    assert s.list_results(attempt_id=attempt.id)[0].detail == "Incorrect."
+
+    adjusted = s.adjust_result(attempt.id, task.id, is_correct=True, score=1.0)
+
+    assert "correct" in adjusted.detail
+    assert "Incorrect" not in adjusted.detail
+
+
+def test_adjust_result_only_touches_its_own_row() -> None:
+    s = _storage()
+    teacher, student = _users(s)
+    assignment = s.create_assignment("Graded", teacher.id, assigned_to=student.id)
+    first = s.create_task(_task(text="Question one?"))
+    second = s.create_task(_task(text="Question two?"))
+    attempt = s.start_attempt(assignment.id, student.id)
+    for task in (first, second):
+        s.record_result(
+            attempt.id,
+            task.id,
+            given_answer="12",
+            expected_answer="12",
+            is_correct=True,
+            score=1.0,
+            detail="Correct.",
+        )
+
+    s.adjust_result(attempt.id, first.id, is_correct=False, score=0.0)
+
+    other = next(r for r in s.list_results(attempt_id=attempt.id) if r.task_id == second.id)
+    assert other.is_correct is True
+    assert other.score == 1.0
+    assert other.score_adjusted is False
+
+
+def test_adjust_result_missing_row_raises() -> None:
+    s = _storage()
+    attempt, task, _ = _graded_row(s)
+
+    with pytest.raises(ValueError, match="No result for task"):
+        s.adjust_result(attempt.id, 9999, is_correct=True, score=1.0)
+    with pytest.raises(ValueError, match="No result for task"):
+        s.adjust_result(9999, task.id, is_correct=True, score=1.0)
+
+
+@pytest.mark.parametrize("score", [-0.01, 1.01, 2.0, -1.0])
+def test_adjust_result_rejects_a_score_out_of_range(score: float) -> None:
+    s = _storage()
+    attempt, task, _ = _graded_row(s)
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        s.adjust_result(attempt.id, task.id, is_correct=True, score=score)
+
+
+def test_recording_again_resets_the_adjustment() -> None:
+    """A later save is the student's own work and an auto-grade, not an override."""
+    s = _storage()
+    attempt, task, _ = _graded_row(s)
+    s.adjust_result(attempt.id, task.id, is_correct=False, score=0.25)
+
+    s.record_result(attempt.id, task.id, given_answer="12", given_solution="redo")
+
+    stored = s.list_results(attempt_id=attempt.id)[0]
+    assert stored.score_adjusted is False
+    assert stored.is_correct is None
+    assert stored.score is None
+    assert stored.given_solution == "redo"
+
+
 # --- passwords & credentials ---------------------------------------------------
 
 

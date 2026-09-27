@@ -295,6 +295,7 @@ class Storage(ABC):
         task_id: int,
         *,
         given_answer: str | None = None,
+        given_solution: str | None = None,
         expected_answer: str | None = None,
         is_correct: bool | None = None,
         score: float | None = None,
@@ -305,7 +306,32 @@ class Storage(ABC):
         A student saves progress and is later graded through the same call, so
         the write is an upsert on ``(attempt_id, task_id)``: at most one row
         exists per task per attempt, and a second call overwrites it (grading
-        fields included) rather than appending a duplicate.
+        fields included) rather than appending a duplicate. ``given_solution``
+        is the student's optional working; callers that re-write a row for
+        grading must pass the saved solution back in, or it is cleared.
+        """
+
+    @abstractmethod
+    def adjust_result(
+        self,
+        attempt_id: int,
+        task_id: int,
+        *,
+        is_correct: bool,
+        score: float,
+    ) -> AttemptResult:
+        """Override the verdict and score an admin gave to one graded task.
+
+        Writes the grading fields only — the student's ``given_answer`` and
+        ``given_solution`` are never touched, so a manual override can't erase
+        their work. ``detail`` is rewritten to follow the new verdict (otherwise
+        a row flipped to correct could still read "Incorrect."), and
+        ``score_adjusted`` is set so a manual grade is distinguishable from an
+        automatic one.
+
+        ``score`` is an explicit 0.0–1.0 value, so partial credit is
+        expressible. Raises ``ValueError`` when ``score`` is outside that range,
+        or when no result row matches ``(attempt_id, task_id)``.
         """
 
     @abstractmethod

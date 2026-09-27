@@ -23,7 +23,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from agentic_learning_portal.admin.formatting import latex_to_plain_text
+from agentic_learning_portal.admin.formatting import latex_to_plain_text, literal_lines
 from agentic_learning_portal.assignment import (
     COMPLETED,
     format_timestamp,
@@ -32,6 +32,9 @@ from agentic_learning_portal.assignment import (
 )
 from agentic_learning_portal.auth import get_storage, require_roles
 from agentic_learning_portal.storage import Assignment, Attempt, Storage, Task
+from agentic_learning_portal.views.components.adjust_score_dialog import (
+    adjust_score_dialog,
+)
 from agentic_learning_portal.views.components.create_task_dialog import (
     create_task_dialog,
 )
@@ -46,24 +49,51 @@ ASSIGNMENTS_PAGE = str(Path(__file__).parent / "01_assignments.py")
 def _clear_task_dialogs() -> None:
     """Close every task dialog (Streamlit allows only one ``st.dialog`` per run).
 
-    Drops the open flags for the create, edit, and remove dialogs plus the
-    post-save jump marker, so a dialog can't leak across pages or survive a
-    change of assignment.
+    Drops the open flags for the create, edit, remove, and adjust-score dialogs
+    plus the post-save jump marker and any pending confirmation, so a dialog
+    can't leak across pages or survive a change of assignment.
     """
     for flag in (
         "create_task_open",
         "edit_task_open",
         "remove_task_open",
+        "adjust_score_open",
         "editor_jump_to_last",
+        "editor_adjusted_score",
     ):
         st.session_state.pop(flag, None)
 
 
-def _open_task_dialog(flag: str, value: int) -> None:
-    """Open exactly one task dialog, closing any other open one."""
+def _open_task_dialog(flag: str, value: int | tuple[int, int]) -> None:
+    """Open exactly one task dialog, closing any other open one.
+
+    ``value`` is the flag's payload: a task id for the task dialogs, or the
+    ``(attempt_id, task_id)`` pair identifying the row the adjust-score dialog
+    was opened from.
+    """
     _clear_task_dialogs()
     st.session_state[flag] = value
     st.rerun()
+
+
+def _dispatch_dialogs(assignment_id: int) -> None:
+    """Render the one dialog whose open flag is set, if any.
+
+    Streamlit allows a single ``st.dialog`` per run, so these are mutually
+    exclusive; each dialog closes itself by clearing its flag. Called both at the
+    end of the page and from the no-tasks early exit below — that branch
+    ``st.stop()``s, and would otherwise cut the run off before a dialog could be
+    dispatched (leaving its flag set and the click apparently ignored).
+    """
+    if st.session_state.get("create_task_open") is not None:
+        create_task_dialog(st.session_state["create_task_open"])
+    elif st.session_state.get("edit_task_open") is not None:
+        edit_task_dialog(st.session_state["edit_task_open"])
+    elif st.session_state.get("remove_task_open") is not None:
+        remove_task_dialog(assignment_id, st.session_state["remove_task_open"])
+    elif st.session_state.get("adjust_score_open") is not None:
+        attempt_id, task_id = st.session_state["adjust_score_open"]
+        adjust_score_dialog(attempt_id, task_id)
 
 
 def _render_task_slide(task: Task, index: int, total: int) -> None:
@@ -99,7 +129,15 @@ def _render_task_slide(task: Task, index: int, total: int) -> None:
 def _render_attempt_detail(
     storage: Storage, attempt: Attempt, tasks: dict[int, Task]
 ) -> None:
-    """Render one attempt's per-task given-vs-expected breakdown."""
+    """Render one attempt's per-task breakdown, with an adjust control per row.
+
+    Each row shows the verdict, the student's answer, their working, and the
+    score on record. A row that has been graded *and* belongs to a completed
+    attempt also gets an ✏️ Adjust score button opening
+    ``adjust_score_dialog`` — a completed attempt is locked, so an override
+    made there can't be wiped by the student saving again.
+    """
+    override_allowed = attempt.status == COMPLETED
     for result in storage.list_results(attempt_id=attempt.id):
         task = tasks.get(result.task_id)
         label = f"**{task.topic}**" if task is not None else f"**task #{result.task_id}** (removed)"
@@ -107,10 +145,28 @@ def _render_attempt_detail(
             verdict = "⏳"  # Saved but not graded yet — the attempt is in progress.
         else:
             verdict = "✅" if result.is_correct else "❌"
-        st.markdown(
+        line = (
             f"{verdict} {label} — given `{result.given_answer or '—'}`"
             f" · expected `{result.expected_answer or '—'}`"
         )
+        if result.score is not None:
+            line += f" · score **{result.score:.2f}**"
+        if result.score_adjusted:
+            line += " · 🧑🏫 adjusted"
+        st.markdown(line)
+        if result.given_solution:
+            st.markdown(
+                f"✍️ **Solution:** {literal_lines(result.given_solution)}"
+            )
+        if override_allowed and result.is_correct is not None:
+            if st.button(
+                "✏️ Adjust score",
+                key=f"adjust_score_{attempt.id}_{result.task_id}",
+                help="Override this task's verdict and score.",
+            ):
+                _open_task_dialog(
+                    "adjust_score_open", (attempt.id, result.task_id)
+                )
 
 
 def _render_attempts_section(storage: Storage, assignment: Assignment) -> None:
@@ -166,6 +222,16 @@ def render_assignment_editor_page() -> None:
     st.set_page_config(page_title="✏️ Assignment Editor", page_icon="✏️")
 
     st.title("✏️ Assignment Editor")
+
+    # Set by the adjust-score dialog, which closes itself on the same rerun — so
+    # the confirmation has to be rendered here to be seen at all.
+    adjusted = st.session_state.pop("editor_adjusted_score", None)
+    if adjusted is not None:
+        label, is_correct, score = adjusted
+        st.success(
+            f"Score adjusted for {label}: "
+            f"{'correct' if is_correct else 'incorrect'}, {score:.2f}."
+        )
 
     assignment_id = st.session_state.get("edit_assignment_id")
     if assignment_id is None:
@@ -248,11 +314,10 @@ def render_assignment_editor_page() -> None:
 
     if not tasks:
         st.info("No tasks in this assignment yet — use ➕ Add task to create one.")
-        # The first task is added through the create dialog; dispatch it here too,
-        # since ``st.stop()`` below would otherwise cut the page off before the
-        # dialog dispatch at the end of this function.
-        if st.session_state.get("create_task_open") is not None:
-            create_task_dialog(st.session_state["create_task_open"])
+        # ``st.stop()`` below would otherwise cut the run off before the dialog
+        # dispatch at the end of this function — and an assignment can still have
+        # attempts on record after its last task was removed.
+        _dispatch_dialogs(assignment_id)
         st.stop()
 
     total = len(tasks)
@@ -289,16 +354,8 @@ def render_assignment_editor_page() -> None:
     dots = "  ".join("●" if i == idx else "○" for i in range(total))
     st.caption(dots)
 
-    # Task dialogs overlay the page while their open flag is set. Only one may
-    # be open per run (Streamlit allows a single ``st.dialog``), so they are
-    # dispatched mutually-exclusively; each dialog closes itself by clearing its
-    # flag when done.
-    if st.session_state.get("create_task_open") is not None:
-        create_task_dialog(st.session_state["create_task_open"])
-    elif st.session_state.get("edit_task_open") is not None:
-        edit_task_dialog(st.session_state["edit_task_open"])
-    elif st.session_state.get("remove_task_open") is not None:
-        remove_task_dialog(assignment_id, st.session_state["remove_task_open"])
+    # Dialogs overlay the page while their open flag is set.
+    _dispatch_dialogs(assignment_id)
 
 
 render_assignment_editor_page()

@@ -472,16 +472,28 @@ def test_remove_shared_task_keeps_it_for_other_assignment(portal_env) -> None:
 # --- attempts -----------------------------------------------------------------
 
 
-def _seed_attempt(assignment_id: int, *, student_id: int, answers: dict[int, str]):
+def _seed_attempt(
+    assignment_id: int,
+    *,
+    student_id: int,
+    answers: dict[int, str],
+    solutions: dict[int, str] | None = None,
+):
     """Take and submit ``assignment_id`` as ``student_id``, grading ``answers``.
 
     ``answers`` maps a task id to the answer to submit; tasks left out are
-    submitted blank.
+    submitted blank. ``solutions`` maps a task id to the working the student
+    showed, for tasks where they wrote any.
     """
     storage = get_storage()
     attempt = storage.start_attempt(assignment_id, student_id)
     for task_id, answer in answers.items():
-        storage.record_result(attempt.id, task_id, given_answer=answer)
+        storage.record_result(
+            attempt.id,
+            task_id,
+            given_answer=answer,
+            given_solution=(solutions or {}).get(task_id),
+        )
     grade_attempt(storage, attempt.id)
     return storage.complete_attempt(attempt.id)
 
@@ -589,3 +601,328 @@ def test_editor_attempts_are_newest_first(portal_env) -> None:
     # Scores newest-first: 0/1 (the wrong retake) then 1/1 (the first attempt).
     assert "0/1" in headers[0]
     assert "1/1" in headers[1]
+
+
+# --- adjusting a score ---------------------------------------------------------
+
+
+def _adjust_key(attempt_id: int, task_id: int) -> str:
+    return f"adjust_score_{attempt_id}_{task_id}"
+
+
+def _open_attempt(assignment_id: int, *, student_id: int, answers, solutions=None):
+    """Seed a submitted attempt and open the editor on it, returning both."""
+    attempt = _seed_attempt(
+        assignment_id, student_id=student_id, answers=answers, solutions=solutions
+    )
+    return attempt, _open_editor(assignment_id)
+
+
+def _verdict_key(attempt_id: int, task_id: int) -> str:
+    return f"adjust_score_verdict_{attempt_id}_{task_id}"
+
+
+def _score_key(attempt_id: int, task_id: int) -> str:
+    return f"adjust_score_value_{attempt_id}_{task_id}"
+
+
+def _open_adjust_dialog(at: AppTest, attempt_id: int, task_id: int) -> AppTest:
+    """Click the row's ✏️ button and return the page with the dialog open."""
+    at.button(key=_adjust_key(attempt_id, task_id)).click().run()
+    return at
+
+
+def test_adjust_dialog_opens_and_prefills_from_the_row(portal_env) -> None:
+    """The dialog shows the row it was opened from, not a blank form."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "wrong"},
+        solutions={tasks[0].id: "I guessed"},
+    )
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    assert not at.exception
+    assert at.session_state["adjust_score_open"] == (attempt.id, tasks[0].id)
+    # The row graded as wrong, so the controls come up saying so.
+    assert at.radio(key=_verdict_key(attempt.id, tasks[0].id)).value == "❌ Incorrect"
+    assert at.number_input(key=_score_key(attempt.id, tasks[0].id)).value == 0.0
+
+
+def test_adjust_dialog_shows_the_task_the_answer_and_the_solution(portal_env) -> None:
+    """The admin reviews the student's work in the dialog before overriding it."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "wrong"},
+        solutions={tasks[0].id: "Step one\nStep two"},
+    )
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    marks = [m.value for m in at.markdown]
+    assert any("Problem text 1" in m for m in marks)
+    assert any("**Student's answer:** wrong" in m for m in marks)
+    assert any("**Student's solution:**" in m and "Step one" in m for m in marks)
+    assert any("**Correct answer:** `Answer 1`" in m for m in marks)
+
+
+def test_adjust_dialog_notes_a_missing_solution(portal_env) -> None:
+    """A student who showed no working says so rather than showing a blank."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    assert any("_(not given)_" in m.value for m in at.markdown)
+
+
+def test_adjust_button_only_on_a_completed_attempt(portal_env) -> None:
+    """An attempt still in progress offers no override — its grade can still change."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt = get_storage().start_attempt(assignment.id, student.id)
+    get_storage().record_result(attempt.id, tasks[0].id, given_answer="wrong")
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    assert any("⏳ **Topic 1**" in m.value for m in at.markdown)
+    assert not any(b.key == _adjust_key(attempt.id, tasks[0].id) for b in at.button)
+
+
+def test_adjust_button_missing_on_an_ungraded_row_of_a_completed_attempt(portal_env) -> None:
+    """A completed attempt with an ungraded row has no score to override yet."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt = get_storage().start_attempt(assignment.id, student.id)
+    get_storage().record_result(attempt.id, tasks[0].id, given_answer="wrong")
+    get_storage().complete_attempt(attempt.id)  # submitted, but never graded
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    assert any("pupil — Completed" in e.label for e in at.expander)
+    assert not any(b.key == _adjust_key(attempt.id, tasks[0].id) for b in at.button)
+
+
+def test_adjusting_a_score_writes_it_through(portal_env) -> None:
+    """Save overrides the verdict and the score, and marks the row as adjusted."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    at.radio(key=_verdict_key(attempt.id, tasks[0].id)).set_value("✅ Correct")
+    at.number_input(key=_score_key(attempt.id, tasks[0].id)).set_value(0.5)
+    at.button(key="adjust_score_save").click().run()
+
+    assert not at.exception
+    # The dialog closed itself and the page confirmed the write.
+    assert "adjust_score_open" not in at.session_state
+    assert any("Score adjusted for Topic 1" in s.value for s in at.success)
+
+    stored = get_storage().list_results(attempt_id=attempt.id)[0]
+    assert stored.is_correct is True
+    assert stored.score == 0.5
+    assert stored.score_adjusted is True
+    assert stored.detail == "Manually graded as correct."
+
+
+def test_adjusting_leaves_the_students_own_work_intact(portal_env) -> None:
+    """An override writes the grade only — never the answer or the solution."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "wrong"},
+        solutions={tasks[0].id: "my working"},
+    )
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    at.number_input(key=_score_key(attempt.id, tasks[0].id)).set_value(0.25)
+    at.button(key="adjust_score_save").click().run()
+
+    stored = get_storage().list_results(attempt_id=attempt.id)[0]
+    assert stored.given_answer == "wrong"
+    assert stored.given_solution == "my working"
+    assert stored.expected_answer == "Answer 1"
+
+
+def test_adjusting_marks_the_row_in_the_breakdown(portal_env) -> None:
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    assert not any("🧑🏫 adjusted" in m.value for m in at.markdown)
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+    at.radio(key=_verdict_key(attempt.id, tasks[0].id)).set_value("✅ Correct")
+    at.number_input(key=_score_key(attempt.id, tasks[0].id)).set_value(0.5)
+    at.button(key="adjust_score_save").click().run()
+
+    assert not at.exception
+    marks = [m.value for m in at.markdown]
+    assert any("✅ **Topic 1**" in m and "score **0.50**" in m for m in marks)
+    assert any("🧑🏫 adjusted" in m for m in marks)
+
+
+def test_adjustment_updates_the_expander_header(portal_env) -> None:
+    """The header's tally follows the verdict while its average follows the score."""
+    assignment, tasks = _seed_assignment(n_tasks=2)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "Answer 1", tasks[1].id: "wrong"},
+    )
+    assert any("1/2 (avg 0.50)" in e.label for e in at.expander)
+
+    # Partial credit on the wrong one: both count as correct, but the average
+    # only reaches three quarters.
+    _open_adjust_dialog(at, attempt.id, tasks[1].id)
+    at.radio(key=_verdict_key(attempt.id, tasks[1].id)).set_value("✅ Correct")
+    at.number_input(key=_score_key(attempt.id, tasks[1].id)).set_value(0.5)
+    at.button(key="adjust_score_save").click().run()
+
+    assert not at.exception
+    assert any("pupil — Completed — 2/2 (avg 0.75)" in e.label for e in at.expander)
+
+
+def test_adjust_cancel_writes_nothing(portal_env) -> None:
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    at.radio(key=_verdict_key(attempt.id, tasks[0].id)).set_value("✅ Correct")
+    at.number_input(key=_score_key(attempt.id, tasks[0].id)).set_value(1.0)
+    at.button(key="adjust_score_cancel").click().run()
+
+    assert not at.exception
+    assert "adjust_score_open" not in at.session_state
+    stored = get_storage().list_results(attempt_id=attempt.id)[0]
+    assert stored.is_correct is False
+    assert stored.score == 0.0
+    assert stored.score_adjusted is False
+
+
+def test_reopening_the_dialog_after_cancel_shows_the_stored_grade(portal_env) -> None:
+    """A cancelled edit is not remembered — the dialog re-seeds from storage."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+    at.radio(key=_verdict_key(attempt.id, tasks[0].id)).set_value("✅ Correct")
+    at.button(key="adjust_score_cancel").click().run()
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+
+    assert at.radio(key=_verdict_key(attempt.id, tasks[0].id)).value == "❌ Incorrect"
+
+
+def test_row_of_a_task_removed_from_the_assignment_can_still_be_adjusted(portal_env) -> None:
+    """A result outlives its task: the row is labelled as removed and stays adjustable."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, _ = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    get_storage().remove_task_from_assignment(assignment.id, tasks[0].id)
+
+    at = _open_editor(assignment.id)
+
+    assert not at.exception
+    assert any(f"**task #{tasks[0].id}** (removed)" in m.value for m in at.markdown)
+
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+    at.radio(key=_verdict_key(attempt.id, tasks[0].id)).set_value("✅ Correct")
+    at.button(key="adjust_score_save").click().run()
+
+    assert not at.exception
+    assert get_storage().list_results(attempt_id=attempt.id)[0].is_correct is True
+
+
+def test_switching_assignment_closes_the_adjust_dialog(portal_env) -> None:
+    """A dialog left open doesn't leak onto the next assignment's page."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    other, _ = _seed_assignment(title="Other HW", n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "wrong"}
+    )
+    _open_adjust_dialog(at, attempt.id, tasks[0].id)
+    assert "adjust_score_open" in at.session_state
+
+    at.session_state["edit_assignment_id"] = other.id
+    at.run()
+
+    assert not at.exception
+    assert "adjust_score_open" not in at.session_state
+
+
+# --- the solution and score in the breakdown -----------------------------------
+
+
+def test_breakdown_shows_the_solution_and_the_score(portal_env) -> None:
+    assignment, tasks = _seed_assignment(n_tasks=2)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "Answer 1", tasks[1].id: "wrong"},
+        solutions={tasks[0].id: "Worked it out"},
+    )
+
+    assert not at.exception
+    marks = [m.value for m in at.markdown]
+    assert any("✍️ **Solution:** Worked it out" in m for m in marks)
+    assert any("✅ **Topic 1**" in m and "score **1.00**" in m for m in marks)
+    assert any("❌ **Topic 2**" in m and "score **0.00**" in m for m in marks)
+    # One solution line only: the row with no working is left bare rather than
+    # padded out with a placeholder on every task.
+    assert sum(1 for m in marks if "✍️ **Solution:**" in m) == 1
+
+
+def test_breakdown_keeps_the_shape_of_a_multi_line_solution(portal_env) -> None:
+    """Markdown folds a single newline, so the working gets hard breaks."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id,
+        student_id=student.id,
+        answers={tasks[0].id: "Answer 1"},
+        solutions={tasks[0].id: "Step one\nStep two"},
+    )
+
+    assert not at.exception
+    assert any("Step one  \nStep two" in m.value for m in at.markdown)
+
+
+def test_results_without_a_solution_are_unaffected(portal_env) -> None:
+    """Rows saved before the solution box existed render exactly as they used to."""
+    assignment, tasks = _seed_assignment(n_tasks=1)
+    student = get_storage().create_user("pupil", "student")
+    attempt, at = _open_attempt(
+        assignment.id, student_id=student.id, answers={tasks[0].id: "Answer 1"}
+    )
+
+    marks = [m.value for m in at.markdown]
+    assert any("✅ **Topic 1** — given `Answer 1` · expected `Answer 1`" in m for m in marks)
+    assert not any("✍️ **Solution:**" in m for m in marks)

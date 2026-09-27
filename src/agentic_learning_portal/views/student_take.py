@@ -8,9 +8,10 @@ The page is a small state machine over the student's attempts, driven by the
 rules in ``assignment/attempts.py``:
 
 - **no attempt yet, entitled to one** — a ▶️ Start button that opens an attempt;
-- **an attempt in progress** — the answer form, one text input per task, with
-  💾 Save progress (upserts the answers and stays ``in_progress``, so the student
-  can leave and come back) and 📤 Submit for grading (saves, auto-grades through
+- **an attempt in progress** — the answer form, an answer input and an optional
+  solution box per task, with 💾 Save progress (upserts both and stays
+  ``in_progress``, so the student can leave and come back) and 📤 Submit for
+  grading (saves, auto-grades through
   ``domains/math/grading.grade_attempt``, then completes the attempt);
 - **attempts used up** — the graded results, read-only.
 
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from agentic_learning_portal.admin.formatting import latex_to_plain_text
+from agentic_learning_portal.admin.formatting import latex_to_plain_text, literal_lines
 from agentic_learning_portal.assignment import (
     active_attempt,
     attempt_score,
@@ -48,10 +49,23 @@ def _answer_key(attempt_id: int, task_id: int) -> str:
     return f"take_answer_{attempt_id}_{task_id}"
 
 
+def _solution_key(attempt_id: int, task_id: int) -> str:
+    """Return the session-state key holding the student's working for a task."""
+    return f"take_solution_{attempt_id}_{task_id}"
+
+
 def _forget_answers(attempt_id: int) -> None:
-    """Drop cached answer text for ``attempt_id`` (used when abandoning it)."""
-    prefix = f"take_answer_{attempt_id}_"
-    for key in [k for k in st.session_state if k.startswith(prefix)]:
+    """Drop the cached answer and solution text for ``attempt_id``.
+
+    Used once the attempt is submitted: the widgets are gone from the page, so
+    their session-state entries would otherwise linger and be re-seeded into a
+    later attempt.
+    """
+    prefixes = (
+        f"take_answer_{attempt_id}_",
+        f"take_solution_{attempt_id}_",
+    )
+    for key in [k for k in st.session_state if k.startswith(prefixes)]:
         st.session_state.pop(key, None)
 
 
@@ -72,14 +86,21 @@ def _start_attempt(assignment_id: int, student_id: int) -> None:
 
 
 def _save_answers(storage: Storage, attempt: Attempt, tasks: list[Task]) -> None:
-    """Upsert the student's current answer for every task of the attempt.
+    """Upsert the student's current answer and solution for every task.
 
     A blank input is stored as ``None`` rather than ``""``, so an untouched task
-    is indistinguishable from a never-saved one.
+    is indistinguishable from a never-saved one — and clearing a box and saving
+    really does clear it.
     """
     for task in tasks:
-        raw = st.session_state.get(_answer_key(attempt.id, task.id), "")
-        storage.record_result(attempt.id, task.id, given_answer=raw.strip() or None)
+        answer = st.session_state.get(_answer_key(attempt.id, task.id), "")
+        solution = st.session_state.get(_solution_key(attempt.id, task.id), "")
+        storage.record_result(
+            attempt.id,
+            task.id,
+            given_answer=answer.strip() or None,
+            given_solution=solution.strip() or None,
+        )
 
 
 def _render_breakdown(storage: Storage, attempt: Attempt, tasks: list[Task]) -> None:
@@ -97,12 +118,17 @@ def _render_breakdown(storage: Storage, attempt: Attempt, tasks: list[Task]) -> 
     for index, task in enumerate(tasks):
         result = answers.get(task.id)
         given = result.given_answer if result is not None else None
+        solution = result.given_solution if result is not None else None
         verdict = "✅" if result is not None and result.is_correct else "❌"
         st.markdown(
             f"{verdict} **Task {index + 1}** — {task.topic} · {task.complexity}"
         )
         st.markdown(latex_to_plain_text(task.text))
         st.markdown(f"- **Your answer:** {given if given else '_(not answered)_'}")
+        st.markdown(
+            "- **✍️ Your solution:** "
+            + (literal_lines(solution) if solution else "_(not given)_")
+        )
         st.markdown(f"- **Correct answer:** `{task.correct_answer}`")
         st.markdown("---")
 
@@ -122,26 +148,39 @@ def _render_start(storage: Storage, assignment: Assignment, student_id: int,
 
 
 def _render_taking(storage: Storage, attempt: Attempt, tasks: list[Task]) -> None:
-    """Render the answer form for an attempt in progress."""
+    """Render the answer-and-solution form for an attempt in progress."""
     saved = {
-        result.task_id: result.given_answer
+        result.task_id: result
         for result in storage.list_results(attempt_id=attempt.id)
     }
 
     for index, task in enumerate(tasks):
         st.markdown(f"**Task {index + 1} of {len(tasks)}** — {task.topic}")
         st.markdown(latex_to_plain_text(task.text))
-        key = _answer_key(attempt.id, task.id)
+        previous = saved.get(task.id)
         # Seed from storage only when the widget has no value yet: passing
         # ``value=`` alongside an existing session-state key is what Streamlit
         # warns about, and the widget's own value must win once the student types.
-        if key not in st.session_state:
-            st.session_state[key] = saved.get(task.id) or ""
+        answer_key = _answer_key(attempt.id, task.id)
+        if answer_key not in st.session_state:
+            st.session_state[answer_key] = (
+                previous.given_answer if previous is not None else None
+            ) or ""
         st.text_input(
             f"Your answer for task {index + 1}",
-            key=key,
+            key=answer_key,
             label_visibility="collapsed",
             placeholder="Type your answer…",
+        )
+        solution_key = _solution_key(attempt.id, task.id)
+        if solution_key not in st.session_state:
+            st.session_state[solution_key] = (
+                previous.given_solution if previous is not None else None
+            ) or ""
+        st.text_area(
+            f"✍️ Your solution (optional) for task {index + 1}",
+            key=solution_key,
+            placeholder="Show your working here — optional, and not graded…",
         )
         st.markdown("---")
 

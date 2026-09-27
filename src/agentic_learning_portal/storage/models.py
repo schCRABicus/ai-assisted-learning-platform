@@ -165,6 +165,10 @@ class AttemptResult(BaseModel):
         default=None,
         description="The student's answer, as raw text.",
     )
+    given_solution: str | None = Field(
+        default=None,
+        description="The student's working, as raw text; optional, never graded.",
+    )
     expected_answer: str | None = Field(
         default=None,
         description="The correct answer, as raw text.",
@@ -178,3 +182,7 @@ class AttemptResult(BaseModel):
         description="Partial credit awarded, when graded.",
     )
     detail: str = Field(default="", description="Grading detail or feedback.")
+    score_adjusted: bool = Field(
+        default=False,
+        description="Whether an admin manually overrode this row's verdict and score.",
+    )

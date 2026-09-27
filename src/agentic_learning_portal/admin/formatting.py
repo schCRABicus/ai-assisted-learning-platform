@@ -1,10 +1,14 @@
-"""Display helpers for rendering LLM-generated content in the portal.
+"""Display helpers for rendering portal content as markdown.
 
 The generation model is instructed to write math in plain text, but it
 occasionally emits LaTeX markup (``$$...$$``, ``\\text{...}``, ``\\frac{}{}``,
 or a stray backslash like ``\\558``) anyway. Streamlit's markdown does not
-render LaTeX, so this converts the common constructs into readable plain text
-as a display-time fallback.
+render LaTeX, so :func:`latex_to_plain_text` converts the common constructs into
+readable plain text as a display-time fallback.
+
+Student-typed text (an answer or a worked solution) needs the opposite
+treatment: it is not LaTeX, but markdown would still collapse its line breaks.
+:func:`literal_lines` keeps the shape the student typed.
 """
 
 from __future__ import annotations
@@ -71,3 +75,16 @@ def latex_to_plain_text(text: str) -> str:
     text = text.replace("\\", "").replace("{", "").replace("}", "")
 
     return text.strip()
+
+
+def literal_lines(text: str) -> str:
+    """Return student-typed text with its line breaks preserved in markdown.
+
+    Markdown folds a single newline into a space, which would run a student's
+    step-by-step working together into one paragraph. Two trailing spaces are
+    markdown's hard break, so a multi-step solution keeps the shape it was typed
+    in. The text is otherwise passed through untouched — unlike generated
+    content it is not LaTeX, so it is not run through
+    :func:`latex_to_plain_text`.
+    """
+    return text.replace("\n", "  \n")
