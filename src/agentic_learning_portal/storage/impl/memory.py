@@ -80,6 +80,10 @@ class InMemoryStorage(Storage):
         self._assignment_tasks: dict[int, list[tuple[int, int]]] = {}
         self._attempts: dict[int, Attempt] = {}
         self._attempt_results: dict[int, AttemptResult] = {}
+        # token_hash -> (user_id, ISO-8601 expiry). Keyed by the hash so the raw
+        # token never lives in memory longer than the caller holds it, mirroring
+        # the sqlite ``sessions`` table.
+        self._sessions: dict[str, tuple[int, str]] = {}
 
         self._next_user_id = 1
         self._next_task_id = 1
@@ -104,6 +108,7 @@ class InMemoryStorage(Storage):
             self._assignment_tasks.clear()
             self._attempts.clear()
             self._attempt_results.clear()
+            self._sessions.clear()
 
     # --- internal helpers ------------------------------------------------------
 
@@ -298,14 +303,60 @@ class InMemoryStorage(Storage):
             self._users[user_id] = updated
             return updated
 
+    # --- sessions ------------------------------------------------------------
+
+    def create_session(self, user_id: int, *, ttl_seconds: int) -> str:
+        """Open a session for ``user_id`` and return its raw token."""
+        with self._lock:
+            self._get_user(user_id)
+            raw = secrets.token_urlsafe(32)
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+            ).isoformat()
+            self._sessions[hash_token(raw)] = (user_id, expires_at)
+            return raw
+
+    def get_user_by_session_token(self, token: str) -> User | None:
+        """Return the user a live session token belongs to, or ``None``."""
+        with self._lock:
+            entry = self._sessions.get(hash_token(token))
+            if entry is None:
+                return None
+            user_id, expires_at_raw = entry
+            try:
+                expires_at = datetime.fromisoformat(expires_at_raw)
+            except ValueError:
+                return None
+            if expires_at <= datetime.now(timezone.utc):
+                return None
+            return self._users.get(user_id)
+
+    def delete_session(self, token: str) -> None:
+        """Revoke the session with ``token``; a no-op when it doesn't exist."""
+        with self._lock:
+            self._sessions.pop(hash_token(token), None)
+
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        """Revoke every session belonging to ``user_id``; return how many."""
+        with self._lock:
+            stale = [h for h, (uid, _) in self._sessions.items() if uid == user_id]
+            for token_hash in stale:
+                del self._sessions[token_hash]
+            return len(stale)
+
     # --- passwords & credentials ---------------------------------------------
 
     def set_password(self, user_id: int, password: str) -> User:
-        """Set (or reset) the user's password hash and return the user."""
+        """Set (or reset) the user's password hash and return the user.
+
+        Every "remember me" session is revoked: a session opened with the old
+        password must not outlive it.
+        """
         with self._lock:
             user = self._get_user(user_id)
             user = user.model_copy(update={"password_hash": hash_password(password)})
             self._users[user_id] = user
+            self.delete_sessions_for_user(user_id)
             return user
 
     def verify_credentials(self, username: str, password: str) -> User | None:

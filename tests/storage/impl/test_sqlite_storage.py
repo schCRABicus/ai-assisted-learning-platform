@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
+from pathlib import Path
 
 import pytest
 from unittest.mock import patch
 
 from agentic_learning_portal.api.model import GeneratedTask
 from agentic_learning_portal.storage import Assignment, Attempt, AttemptResult, Role, SqliteStorage, Task, User
+from agentic_learning_portal.storage.impl.sqlite import MIGRATIONS_DIR
 
 
 def _storage() -> SqliteStorage:
@@ -1131,6 +1134,136 @@ def test_issue_verification_token_missing_raises() -> None:
 
     with pytest.raises(ValueError, match="No user with id 999"):
         s.issue_verification_token(999)
+
+
+# --- sessions --------------------------------------------------------------------
+
+
+def test_create_session_round_trips() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    found = s.get_user_by_session_token(token)
+    assert found is not None
+    assert found.id == user.id
+
+
+def test_session_token_is_persisted_only_as_a_hash() -> None:
+    """The raw token must not be in the database — a dump can't be replayed.
+
+    Deliberately white-box: the API can't show what a column holds, and this is
+    the property that makes a stolen database useless to an attacker.
+    """
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    stored = [row["token_hash"] for row in s._conn.execute("SELECT token_hash FROM sessions")]
+    assert stored, "the session row should exist"
+    assert token not in stored  # the raw token itself is never written
+    assert all(len(digest) == 64 for digest in stored)  # SHA-256 hex
+
+
+def test_sessions_are_independent_per_token() -> None:
+    """One user can hold several live sessions — a browser each."""
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    first = s.create_session(user.id, ttl_seconds=3600)
+    second = s.create_session(user.id, ttl_seconds=3600)
+
+    assert first != second
+    assert s.get_user_by_session_token(first).id == user.id  # type: ignore[union-attr]
+    assert s.get_user_by_session_token(second).id == user.id  # type: ignore[union-attr]
+
+
+def test_get_user_by_session_token_rejects_unknown() -> None:
+    s = _storage()
+    s.create_user("alice", "student", password="pw123")
+
+    assert s.get_user_by_session_token("bogus-token") is None
+
+
+def test_session_token_expires() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=-1)  # already expired
+
+    assert s.get_user_by_session_token(token) is None
+
+
+def test_create_session_missing_user_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No user with id 999"):
+        s.create_session(999, ttl_seconds=3600)
+
+
+def test_delete_session_is_idempotent() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    s.delete_session(token)
+    s.delete_session(token)  # logging out twice must not raise
+    s.delete_session("never-existed")
+
+    assert s.get_user_by_session_token(token) is None
+
+
+def test_delete_sessions_for_user_revokes_every_one() -> None:
+    s = _storage()
+    alice = s.create_user("alice", "student", password="pw123")
+    bob = s.create_user("bob", "student", password="pw123")
+    tokens = [s.create_session(alice.id, ttl_seconds=3600) for _ in range(3)]
+    bob_token = s.create_session(bob.id, ttl_seconds=3600)
+
+    assert s.delete_sessions_for_user(alice.id) == 3
+
+    for token in tokens:
+        assert s.get_user_by_session_token(token) is None
+    # Another user's session is untouched.
+    assert s.get_user_by_session_token(bob_token) is not None
+
+
+def test_set_password_revokes_sessions() -> None:
+    """A reset password must not leave a session opened with the old one alive."""
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    s.set_password(user.id, "newpw")
+
+    assert s.get_user_by_session_token(token) is None
+    assert s.verify_credentials("alice", "newpw") is not None
+
+
+def test_sessions_migration_applies_to_a_populated_database(tmp_path) -> None:
+    """0006 is an additive CREATE, so an existing database upgrades in place.
+
+    Builds a database at the schema *before* 0006, puts data in it, then opens
+    it with the current migrations — the upgrade path a deployed portal takes.
+    """
+    old_migrations = tmp_path / "old_migrations"
+    old_migrations.mkdir()
+    for path in Path(MIGRATIONS_DIR).glob("000[1-5]_*"):
+        shutil.copy(path, old_migrations / path.name)
+
+    db = tmp_path / "portal.db"
+    before = SqliteStorage(str(db), migrations_dir=str(old_migrations))
+    alice = before.create_user("alice", "student", password="pw123")
+    before.close()
+
+    upgraded = SqliteStorage(str(db))
+
+    # Existing data survives, and sessions work on the upgraded schema.
+    assert upgraded.get_user_by_username("alice").id == alice.id  # type: ignore[union-attr]
+    token = upgraded.create_session(alice.id, ttl_seconds=3600)
+    assert upgraded.get_user_by_session_token(token).id == alice.id  # type: ignore[union-attr]
 
 
 def test_complete_email_verification_missing_raises() -> None:

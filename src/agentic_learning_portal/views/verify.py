@@ -1,8 +1,9 @@
 """Account-verification endpoint of the Agentic Learning Portal.
 
-Served at ``/verify`` (via ``st.navigation`` in ``app.py``). This is the one
-*public* page — it is not role-gated, because the person who opens it is by
-definition not yet signed in (they clicked an emailed link).
+Served at ``/verify`` (via ``st.navigation`` in ``app.py``). Public — not
+role-gated, because the person who opens it has no account access yet (they
+clicked an emailed link). It is the only public page besides sign-in, and it
+stays out of the sidebar (``visibility="hidden"``).
 
 Flow: the URL carries a one-time token (``?token=…``). The page hashes it and
 asks storage for the pending user; on a hit it shows a "choose a password" form,
@@ -19,7 +20,7 @@ import streamlit as st
 
 from agentic_learning_portal.auth import get_storage
 
-STUDENT_PAGE = str(Path(__file__).parent / "student.py")
+SIGNIN_PAGE = str(Path(__file__).parent / "signin.py")
 
 # Set once the password is saved and the email marked verified, so the success
 # screen survives the post-submit rerun even though the token is now gone.
@@ -42,7 +43,7 @@ def render_verify_page() -> None:
         st.success("Account verified! You can now sign in.")
         st.balloons()
         if st.button("← Go to sign in"):
-            st.switch_page(STUDENT_PAGE)
+            st.switch_page(SIGNIN_PAGE)
         st.stop()
 
     token = st.query_params.get("token")

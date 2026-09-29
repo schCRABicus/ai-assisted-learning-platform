@@ -1317,9 +1317,131 @@ def test_close_drops_all_data(monkeypatch) -> None:
     monkeypatch.delenv("ADMIN_USERNAME", raising=False)
     monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     s = _storage()
-    s.create_user("alice", "student")
+    alice = s.create_user("alice", "student", password="pw123")
+    token = s.create_session(alice.id, ttl_seconds=3600)
 
     s.close()
 
     assert s.list_users() == []
     assert s.list_roles() == []
+    # A session minted before the wipe must not survive it, or a later test
+    # (or a reused instance) would inherit a valid login.
+    assert s.get_user_by_session_token(token) is None
+
+# --- sessions --------------------------------------------------------------------
+
+
+def test_create_session_round_trips() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    found = s.get_user_by_session_token(token)
+    assert found is not None
+    assert found.id == user.id
+
+
+def test_session_token_is_persisted_only_as_a_hash() -> None:
+    """The raw token is never the key — only its digest is kept.
+
+    Deliberately white-box: the API can't show what is stored, and this is the
+    property that makes a leaked store useless to an attacker.
+    """
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    assert s._sessions, "the session entry should exist"
+    assert token not in s._sessions
+    assert all(len(digest) == 64 for digest in s._sessions)  # SHA-256 hex
+
+
+def test_sessions_are_independent_per_token() -> None:
+    """One user can hold several live sessions — a browser each."""
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    first = s.create_session(user.id, ttl_seconds=3600)
+    second = s.create_session(user.id, ttl_seconds=3600)
+
+    assert first != second
+    assert s.get_user_by_session_token(first).id == user.id  # type: ignore[union-attr]
+    assert s.get_user_by_session_token(second).id == user.id  # type: ignore[union-attr]
+
+
+def test_get_user_by_session_token_rejects_unknown() -> None:
+    s = _storage()
+    s.create_user("alice", "student", password="pw123")
+
+    assert s.get_user_by_session_token("bogus-token") is None
+
+
+def test_session_token_expires() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+
+    token = s.create_session(user.id, ttl_seconds=-1)  # already expired
+
+    assert s.get_user_by_session_token(token) is None
+
+
+def test_create_session_missing_user_raises() -> None:
+    s = _storage()
+
+    with pytest.raises(ValueError, match="No user with id 999"):
+        s.create_session(999, ttl_seconds=3600)
+
+
+def test_delete_session_is_idempotent() -> None:
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    s.delete_session(token)
+    s.delete_session(token)  # logging out twice must not raise
+    s.delete_session("never-existed")
+
+    assert s.get_user_by_session_token(token) is None
+
+
+def test_delete_sessions_for_user_revokes_every_one() -> None:
+    s = _storage()
+    alice = s.create_user("alice", "student", password="pw123")
+    bob = s.create_user("bob", "student", password="pw123")
+    tokens = [s.create_session(alice.id, ttl_seconds=3600) for _ in range(3)]
+    bob_token = s.create_session(bob.id, ttl_seconds=3600)
+
+    assert s.delete_sessions_for_user(alice.id) == 3
+
+    for token in tokens:
+        assert s.get_user_by_session_token(token) is None
+    # Another user's session is untouched.
+    assert s.get_user_by_session_token(bob_token) is not None
+
+
+def test_set_password_revokes_sessions() -> None:
+    """A reset password must not leave a session opened with the old one alive."""
+    s = _storage()
+    user = s.create_user("alice", "student", password="pw123")
+    token = s.create_session(user.id, ttl_seconds=3600)
+
+    s.set_password(user.id, "newpw")
+
+    assert s.get_user_by_session_token(token) is None
+    assert s.verify_credentials("alice", "newpw") is not None
+
+
+def test_reset_storage_drops_sessions(portal_env) -> None:
+    """``reset_storage`` must not leave a usable token behind for the next test."""
+    from agentic_learning_portal.auth import get_storage
+    from agentic_learning_portal.storage.factory import reset_storage
+
+    storage = get_storage()
+    user = storage.create_user("alice", "student", password="pw123")
+    token = storage.create_session(user.id, ttl_seconds=3600)
+
+    reset_storage()
+
+    assert get_storage().get_user_by_session_token(token) is None

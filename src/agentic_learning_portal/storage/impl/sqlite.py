@@ -443,7 +443,11 @@ class SqliteStorage(Storage):
     # --- passwords & credentials ---------------------------------------------
 
     def set_password(self, user_id: int, password: str) -> User:
-        """Set (or reset) the user's password hash and return the user."""
+        """Set (or reset) the user's password hash and return the user.
+
+        Every "remember me" session is revoked: a session opened with the old
+        password must not outlive it.
+        """
         with self._lock:
             if self.get_user(user_id) is None:
                 raise ValueError(f"No user with id {user_id}")
@@ -451,6 +455,7 @@ class SqliteStorage(Storage):
                 "UPDATE users SET password_hash = ? WHERE id = ?",
                 (hash_password(password), user_id),
             )
+            self.delete_sessions_for_user(user_id)
             self._conn.commit()
             return self.get_user(user_id)
 
@@ -466,6 +471,59 @@ class SqliteStorage(Storage):
         if verify_password(password, user.password_hash):
             return user
         return None
+
+    # --- sessions ------------------------------------------------------------
+
+    def create_session(self, user_id: int, *, ttl_seconds: int) -> str:
+        """Open a session for ``user_id`` and return its raw token."""
+        with self._lock:
+            if self.get_user(user_id) is None:
+                raise ValueError(f"No user with id {user_id}")
+            raw = secrets.token_urlsafe(32)
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+            ).isoformat()
+            self._conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (hash_token(raw), user_id, expires_at, _now()),
+            )
+            self._conn.commit()
+            return raw
+
+    def get_user_by_session_token(self, token: str) -> User | None:
+        """Return the user a live session token belongs to, or ``None``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT user_id, expires_at FROM sessions WHERE token_hash = ?",
+                (hash_token(token),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            expires_at = datetime.fromisoformat(row["expires_at"])
+        except ValueError:
+            return None
+        if expires_at <= datetime.now(timezone.utc):
+            return None
+        return self.get_user(row["user_id"])
+
+    def delete_session(self, token: str) -> None:
+        """Revoke the session with ``token``; a no-op when it doesn't exist."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM sessions WHERE token_hash = ?", (hash_token(token),)
+            )
+            self._conn.commit()
+
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        """Revoke every session belonging to ``user_id``; return how many."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM sessions WHERE user_id = ?", (user_id,)
+            )
+            self._conn.commit()
+            return cursor.rowcount
 
     def seed_admin_from_env(self) -> User | None:
         """Create the initial admin (admin + teacher) from ``ADMIN_USERNAME`` /

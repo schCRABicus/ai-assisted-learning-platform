@@ -11,7 +11,6 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-ai-slim[google,groq]>=2.26.0",
     "streamlit>=1.41",
-    "streamlit-cookies-controller>=0.0.4",
     "yoyo-migrations>=9.0.0",
 ]
 

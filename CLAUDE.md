@@ -83,11 +83,11 @@ Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
 - Run all tests: `uv run pytest`
 - Run a single test: `uv run pytest tests/domains/math/test_math_generator.py::test_build_user_prompt_includes_subtopics`
 - Run the demo CLI: `uv run run-app` — needs a `GOOGLE_API_KEY` in `.env` (`echo 'GOOGLE_API_KEY=your-key-here' > .env`). The demo also verifies with a judge ensemble: Wolfram|Alpha (needs `WOLFRAM_APP_ID` and `GROQ_API_KEY` — the judge's translation runs on `groq:openai/gpt-oss-120b`; without a Groq key the judge falls back to the Gemini model) and Qwen (needs `GROQ_API_KEY` — `qwen/qwen3.6-27b`, served by Groq). Judges are skipped individually when their key is missing; without any judge keys the demo falls back to plain generation.
-- Storage bootstraps from `.env` when the portal (or a script) calls `load_dotenv()`: if `ADMIN_USERNAME` and `ADMIN_PASSWORD` are both set, the storage backend seeds an admin (roles `admin` + `teacher`) on construction — idempotent, and the password is stored as a salted scrypt hash, never plaintext. `verify_credentials(username, password)` is the login check. Two backends implement the same `Storage` contract: `SqliteStorage` (file-backed at `PORTAL_DB_PATH`, default `portal.db` in the working dir, git-ignored) and `InMemoryStorage` (dict-backed, instant, nothing persisted). `auth.get_storage()` picks one per process via `STORAGE_BACKEND` (`"sqlite"` default | `"memory"`) — see *Authentication & authorization* below.
+- Storage bootstraps from `.env` when the portal (or a script) calls `load_dotenv()`: if `ADMIN_USERNAME` and `ADMIN_PASSWORD` are both set, the storage backend seeds an admin (roles `admin` + `teacher`) on construction — idempotent, and the password is stored as a salted scrypt hash, never plaintext. `verify_credentials(username, password)` is the login check. Two backends implement the same `Storage` contract: `SqliteStorage` (file-backed at `PORTAL_DB_PATH`, default `portal.db` in the working dir, git-ignored) and `InMemoryStorage` (dict-backed, instant, nothing persisted). `auth.get_storage()` picks one per process via `STORAGE_BACKEND` (`"sqlite"` default | `"memory"`) — see *Authentication & authorization* below. The contract also carries the remember-me sessions: `create_session(user_id, ttl_seconds=...)` returns a raw `secrets.token_urlsafe` token and stores only its SHA-256 (table `sessions`, migration 0006), `get_user_by_session_token` resolves a live one and rejects an expired/revoked/unknown token alike, `delete_session` revokes one, and `delete_sessions_for_user` revokes every session a user holds (wired into `set_password`, so a password reset can't leave a session opened with the old password alive).
 
 `pytest` runs in `asyncio_mode = "auto"` (configured in `pyproject.toml`), so async tests need no `@pytest.mark.asyncio`.
 
-- Run the portal: `uv run run-portal` (or `uv run streamlit run src/agentic_learning_portal/app.py`) — a single Streamlit app exposing each page as an endpoint via `st.navigation`: the admin page at `/admin` (task generation) and a student placeholder at `/student`. Needs a `GOOGLE_API_KEY` in `.env` for the subtopic-suggestion call and for generation. Both endpoints are auth-gated (see *Authentication & authorization*); set `ADMIN_USERNAME`/`ADMIN_PASSWORD` in `.env` for the initial admin account.
+- Run the portal: `uv run run-portal` (or `uv run streamlit run src/agentic_learning_portal/app.py`) — a single Streamlit app exposing each page as an endpoint via `st.navigation`: the public sign-in page at `/` (the only `default=True` page — holding that flag is what strips a page's named URL, so it must sit on the page that never needs one), the admin pages at `/admin`, `/assignments` and `/users`, the student page at `/student`, and the public `/verify` linked from the invitation email. Needs a `GOOGLE_API_KEY` in `.env` for the subtopic-suggestion call and for generation. The admin and student pages are auth-gated (see *Authentication & authorization*); set `ADMIN_USERNAME`/`ADMIN_PASSWORD` in `.env` for the initial admin account.
 
 ## Architecture
 
@@ -112,9 +112,25 @@ The package is split into a generic **api layer** and domain-specific **domains*
 
 ### Streamlit portal (single app, one endpoint per page)
 
-- `app.py` — the single Streamlit entry point. `st.navigation` maps each page
-  to a distinct URL: `pages/admin.py` → `/admin` (default), and a
-  `pages/student.py` placeholder → `/student`. Launch with `uv run run-portal`.
+- `app.py` — the single Streamlit entry point. `st.navigation` maps each page to
+  a distinct URL and builds the sidebar from the signed-in user's roles: an
+  admin or teacher sees only the **Admin** section (`views/admin.py` →
+  `/admin`, `views/admin/01_assignments.py` → `/assignments`,
+  `views/admin/03_users.py` → `/users`), a student only **Student**
+  (`views/student.py`). A user holding both sees both sections, Admin first —
+  the same precedence `auth.landing_page_path` uses. Signed out, the only entry
+  is **Sign in** (`views/signin.py`), which is also the one `default=True` page
+  and therefore the app's front door at `/`.
+  **Every page is registered on every run** — `visibility` only hides a page
+  from the sidebar, and the hidden ones (`views/signin.py`,
+  `01_assignment_editor.py`, `views/student_take.py`, `views/verify.py`) ride
+  along inside whichever section is showing so no header is left empty. That
+  matters because a page dropped from the navigation stops resolving outright:
+  its URL would 404 and any `st.switch_page` aimed at it would raise for
+  whoever is signed in at the time. The pages gate themselves
+  (`auth.require_roles`), so registering one is not a grant. `flush_remember_me()`
+  runs here, before `st.navigation`, since a signed-out visitor's sign-in page
+  is public and no guard would run for them. Launch with `uv run run-portal`.
 - `pages/admin.py` — the admin endpoint, which is assignment-centric. The
   landing view is just an assignment-creation form: a title input + "➕ Add
   assignment" button. On click the assignment is persisted immediately via
@@ -165,13 +181,16 @@ The package is split into a generic **api layer** and domain-specific **domains*
 
 ### Authentication & authorization (local login/password)
 
-Both endpoints are gated by `auth.py` via `require_roles(...)`, called at the
-top of each page before any widget: `/admin` requires the `admin` or `teacher`
-role, `/student` requires any authenticated user. An unauthenticated visitor gets
-an inline login form (`auth.render_login_form`) and `st.stop()` — so no LLM call
-fires before sign-in; a signed-in user lacking a required role gets an
-access-denied message. `app.py` renders a "signed in as" badge + Log out in the
-sidebar (`auth.render_sidebar_user`).
+Pages are gated by `auth.py` via `require_roles(...)`, called at the top of each
+page before any widget: the admin pages require the `admin` or `teacher` role
+(`auth.ADMIN_ROLES`, shared with the nav so the two can't drift), `/student`
+requires any authenticated user. An unauthenticated visitor gets an inline login
+form (`auth.render_login_form`) and `st.stop()` — so no LLM call fires before
+sign-in; a signed-in user lacking a required role gets an access-denied message.
+Two pages are deliberately **public**: `views/signin.py` (at `/`) and
+`views/verify.py`, whose visitor has an emailed token but no account access yet.
+`app.py` renders a "signed in as" badge + Log out in the sidebar
+(`auth.render_sidebar_user`).
 
 Identity lives in `st.session_state["user"]` and is checked against the
 configured storage backend via `verify_credentials` (salted scrypt hashes,
@@ -184,15 +203,37 @@ per-thread connection concern, and AppTest's page-script thread must see users
 created on the test's main thread). `auth.reset_storage()` drops every instance
 (test isolation) and re-seeds the admin on the next construction.
 
+**"Remember me" is an opaque session token in a cookie**
+(`remember_me_logged_in_user`), never a user id — a stored id would be forgeable
+by hand-editing the cookie into a full sign-in as that user. `login(...,
+remember_me=True)` opens a session (`create_session`) and queues its raw token;
+`current_user()` resolves the cookie through `get_user_by_session_token`, and
+`logout()` deletes the session server-side before clearing state, so a copy of
+the cookie left on disk is dead. The session is resolved from
+`st.context.cookies` — the cookies of the request that opened the session — which
+is synchronous and available on the very first run. **Writing** the cookie is
+deferred to a run that completes without an `st.rerun()` (`auth.flush_remember_me`,
+called from `app.py` on every run and idempotently from `require_roles`): doing it
+inline races the post-login rerun, which tears the `<script>` element down before
+the browser executes it. The write itself is a `<script>` emitted through
+`st.html(..., unsafe_allow_javascript=True)` — the JS runs in the main document,
+and values go through `json.dumps`. This replaced `streamlit_cookies_controller`,
+whose Python layer passed `expires` as an ISO-8601 string while its bundled JS
+required a real `Date` and threw before `document.cookie` was ever assigned, so
+every write failed silently. `HttpOnly` is impossible from JavaScript, which is
+precisely why the value is an opaque, revocable token rather than an identity.
+A per-session `_FORCE_LOGGED_OUT` flag keeps logout sticky, since the session's
+`st.context.cookies` are immutable and would otherwise re-authenticate the user
+on the next run.
+
 Auth is **local username/password by design, not OIDC**: hashing, roles, and the
 admin seed already exist, and there is no identity provider to integrate in a
 single-process Streamlit sandbox. OIDC would only pay off with an existing IdP
 (SSO, managed MFA/password policy, external users); the page guards are role-only,
 so swapping in OIDC later means replacing `auth.login` / `verify_credentials`
-without touching any page. User provisioning beyond the seeded admin isn't
-implemented yet (storage's `create_user`/`list_users` already exist for it). The
-guards are exercised in `tests/portal/test_auth.py` (AppTest) and
-`tests/admin/test_admin_page.py` logs in through the form.
+without touching any page. `tests/portal/test_auth.py` (AppTest) exercises the
+guards and the session cookie, `tests/portal/test_nav.py` asserts the per-role
+sidebar, and `tests/admin/test_admin_page.py` logs in through the form.
 
 ### The generation flow
 

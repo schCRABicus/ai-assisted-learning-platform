@@ -135,6 +135,43 @@ class Storage(ABC):
         invited account can't sign in before opening the verification link.
         """
 
+    # --- sessions ------------------------------------------------------------
+
+    @abstractmethod
+    def create_session(self, user_id: int, *, ttl_seconds: int) -> str:
+        """Open a session for ``user_id`` and return its raw token.
+
+        Backs "Remember me": the token goes into a browser cookie and only its
+        hash is stored (mirroring ``issue_verification_token``), so a leaked
+        database can't be replayed against the app. Unlike a verification
+        token, a user may hold several sessions at once — one per browser.
+        Raises ``ValueError`` when no user with ``user_id`` exists.
+        """
+
+    @abstractmethod
+    def get_user_by_session_token(self, token: str) -> User | None:
+        """Return the user a live session token belongs to, or ``None``.
+
+        ``None`` covers every failure the caller must treat identically: an
+        unknown token, a revoked one, or an expired one.
+        """
+
+    @abstractmethod
+    def delete_session(self, token: str) -> None:
+        """Revoke the session with ``token``; a no-op when it doesn't exist.
+
+        Idempotent on purpose: logging out twice, or in two tabs, must not
+        raise.
+        """
+
+    @abstractmethod
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        """Revoke every session belonging to ``user_id``; return how many.
+
+        Used when a password changes, so a session opened with the old
+        password (or a stolen cookie) stops working.
+        """
+
     # --- tasks ---------------------------------------------------------------
 
     @abstractmethod

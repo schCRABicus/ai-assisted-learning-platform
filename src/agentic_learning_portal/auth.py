@@ -20,20 +20,26 @@ so the login mechanism is a swap-in seam. Today it's local username/password;
 an OIDC provider could replace ``login``/``verify_credentials`` later without
 touching any page.
 
-Remember-me ("stay signed in") works through a browser cookie
-(``REMEMBER_ME_COOKIE_NAME``) that auto-logs-in a fresh session:
+Remember-me ("stay signed in") is a browser cookie
+(``REMEMBER_ME_COOKIE_NAME``) holding an **opaque session token** — never a
+user id:
 
-- **Reading** goes through ``st.context.cookies`` — the cookies the browser
-  actually sent in the request that opened the session. This is synchronous and
-  available on the very first run, so a returning visitor is signed in before
-  anything renders. (The old approach asked a custom component to round-trip
-  the cookie to Python, which never resolved on a fresh session.)
-- **Writing** (and clearing) the cookie goes through
-  ``streamlit_cookies_controller.CookieController`` — its JS writes
-  ``document.cookie`` inside a same-origin iframe. Because the iframe executes
-  asynchronously, the write is *deferred* to a run that completes without an
-  ``st.rerun()`` (see ``_flush_remember_me``); doing it on the login run would
-  race the post-login rerun and tear the iframe down before the cookie lands.
+- **The token** is minted by ``Storage.create_session`` and only its SHA-256 is
+  stored, so the cookie is not a credential anyone can guess or forge. Reading
+  it goes through ``st.context.cookies`` — the cookies the browser sent in the
+  request that opened the session — which is synchronous and available on the
+  very first run, so a returning visitor is signed in before anything renders.
+- **Writing** (and clearing) it goes through a ``<script>`` emitted by
+  ``st.html(..., unsafe_allow_javascript=True)``, which executes in the main
+  document. This replaces ``streamlit_cookies_controller``, whose bundled JS
+  serializer required a real ``Date`` for ``expires`` while its Python layer
+  always passed it an ISO-8601 string — so every write threw before
+  ``document.cookie`` was assigned and the cookie was silently never stored.
+
+Because the browser can only be asked to store the cookie once a run has been
+sent, and because the token has to outlive the rerun that follows a login or
+logout, the write is *deferred* to a run that completes without an
+``st.rerun()`` (see ``_flush_remember_me``).
 
 A per-session ``_FORCE_LOGGED_OUT`` flag keeps the logout stick: once a user
 logs out, the remember-me cookie must not re-authenticate them on a later run
@@ -44,11 +50,11 @@ so without the flag logout would immediately sign them back in).
 from __future__ import annotations
 
 import functools
+import json
+from pathlib import Path
 from typing import Callable
 
 import streamlit as st
-
-from streamlit_cookies_controller import CookieController
 
 from agentic_learning_portal.storage import RoleName, Storage, User
 from agentic_learning_portal.storage.factory import StorageFactory
@@ -58,13 +64,19 @@ STORAGE_FACTORY = StorageFactory()
 REMEMBER_ME_COOKIE_NAME = "remember_me_logged_in_user"
 REMEMBER_ME_MAX_AGE = 7 * 24 * 60 * 60  # 7 days, in seconds.
 
+# Roles that see the admin side of the portal (kept here so the nav and the page
+# guards can't drift apart).
+ADMIN_ROLES: tuple[RoleName, ...] = ("admin", "teacher")
+
 # Session-state flags that hand the browser-cookie write off to a later run:
-# ``_PENDING_REMEMBER_ME`` carries the user id to persist, ``_CLEAR_REMEMBER_ME``
+# ``_PENDING_REMEMBER_ME`` carries the session token to persist, ``_CLEAR_REMEMBER_ME``
 # requests the cookie be removed, and ``_FORCE_LOGGED_OUT`` blocks auto-login
-# for the rest of the session after an explicit logout.
+# for the rest of the session after an explicit logout. ``_SESSION_TOKEN`` holds
+# the raw token of the session this browser is using, so ``logout`` can revoke it.
 _PENDING_REMEMBER_ME = "_remember_me_pending"
 _CLEAR_REMEMBER_ME = "_remember_me_clear"
 _FORCE_LOGGED_OUT = "_force_logged_out"
+_SESSION_TOKEN = "session_token"
 
 
 def get_storage() -> Storage:
@@ -79,110 +91,134 @@ def get_storage() -> Storage:
     return STORAGE_FACTORY.get_storage()
 
 
-def _remember_me_user() -> User | None:
-    """Return the user a browser remember-me cookie points to, or ``None``.
+def _remember_me_session() -> tuple[User, str] | None:
+    """Resolve the remember-me cookie to a user and the token that proved it.
 
     Reads the cookie from ``st.context.cookies`` — the cookies the browser sent
     in the request that opened this session — so it is available synchronously
-    on the very first run, before any widget renders. Returns ``None`` (never
-    raises) when there is no cookie, it isn't a valid user id, or the user no
-    longer exists.
+    on the very first run, before any widget renders, and returns ``None``
+    (never raises) when there is no cookie or nothing live matches it. An
+    unknown, revoked, and expired token are indistinguishable to the caller on
+    purpose: all three mean "sign in again".
     """
-    user_id_str = st.context.cookies.get(REMEMBER_ME_COOKIE_NAME)
+    token = st.context.cookies.get(REMEMBER_ME_COOKIE_NAME)
     # A real browser only ever sends ``str`` (or no cookie). Reject anything
     # else outright: under AppTest the runtime is replaced with a ``MagicMock``,
-    # so ``st.context.cookies.get(...)`` hands back a truthy Mock and
-    # ``int(Mock) == 1`` — which would auto-sign-in the very first user.
-    if not isinstance(user_id_str, str):
+    # so ``st.context.cookies.get(...)`` hands back a truthy Mock rather than
+    # ``None``, and that Mock would flow on into ``hash_token``.
+    if not isinstance(token, str) or not token:
         return None
-    try:
-        user_id = int(user_id_str)
-    except ValueError:
-        return None
-    return get_storage().get_user(user_id)
+    user = get_storage().get_user_by_session_token(token)
+    return None if user is None else (user, token)
 
 
 def current_user() -> User | None:
     """Return the logged-in user for this browser session, or ``None``.
 
     The user is looked up in this order: an explicit sign-in in
-    ``st.session_state``, then the remember-me cookie from the request that
+    ``st.session_state``, then the remember-me session from the request that
     opened the session, then ``None``. Once found the user is cached in
-    session state. An explicit logout within the same session wins over the
-    (immutable) cookie, so it never signs the user back in on a later run.
+    session state, along with the token that proves it so ``logout`` can revoke
+    it. An explicit logout within the same session wins over the (immutable)
+    cookie, so it never signs the user back in on a later run.
     """
     if st.session_state.get(_FORCE_LOGGED_OUT):
         return None
     if st.session_state.get("user") is not None:
         return st.session_state.get("user")
 
-    user = _remember_me_user()
-    if user is not None:
+    session = _remember_me_session()
+    if session is not None:
+        user, token = session
         st.session_state["user"] = user
+        st.session_state[_SESSION_TOKEN] = token
         return user
     return None
 
 
-def login(username: str, password: str) -> User | None:
+def login(username: str, password: str, *, remember_me: bool = False) -> User | None:
     """Verify credentials against storage and remember the user in the session.
 
     Returns the ``User`` on success (already stored in session state), or
     ``None`` when the credentials don't match any user. Success also clears the
-    logged-out flag so a remember-me sign-in after a logout takes effect.
+    logged-out flag so a sign-in after a logout takes effect.
+
+    With ``remember_me``, a session is opened and its token queued for the
+    browser cookie. See ``_flush_remember_me`` for why the cookie write itself
+    waits for a later run.
     """
     user = get_storage().verify_credentials(username, password)
-    if user is not None:
-        st.session_state["user"] = user
-        st.session_state[_FORCE_LOGGED_OUT] = False
+    if user is None:
+        return None
+
+    st.session_state["user"] = user
+    st.session_state[_FORCE_LOGGED_OUT] = False
+    if remember_me:
+        # Mint the token now — so a failed cookie write still leaves the session
+        # revocable — but let ``_flush_remember_me`` hand it to the browser on
+        # the next run that completes.
+        token = get_storage().create_session(user.id, ttl_seconds=REMEMBER_ME_MAX_AGE)
+        st.session_state[_PENDING_REMEMBER_ME] = token
+        st.session_state[_SESSION_TOKEN] = token
     return user
 
 
-def _cookie_writer() -> CookieController:
-    """Build the controller that writes cookies, without its read-only component.
+def _render_cookie_write(name: str, value: str, *, max_age: int) -> None:
+    """Ask the browser to store ``name=value`` for ``max_age`` seconds.
 
-    ``CookieController.__init__`` renders a ``getAll`` custom component (unless
-    ``st.session_state["cookies"]`` already exists) whose frontend round-trips a
-    value back and triggers an extra rerun — which would race the ``set`` /
-    ``remove`` iframe this flush is about to render. Seeding the session key
-    first skips that component; the read path is ``st.context.cookies`` anyway,
-    so we never use the library's cached reads.
+    Emitted as a ``<script>`` through ``st.html(..., unsafe_allow_javascript=True)``,
+    which the frontend runs in the **main document** rather than inside a
+    component iframe — so the assignment doesn't depend on an iframe finishing
+    its load, and ``streamlit.components.v1.html`` (past its removal date) is
+    avoided. The flag is only safe because nothing here is user-supplied: the
+    value is a session token we minted, and both strings go through
+    ``json.dumps`` so neither can break out of the literal.
+
+    ``max_age=0`` clears the cookie. There is no way to set ``HttpOnly`` from
+    JavaScript — the cookie is readable by any script on the page — which is
+    exactly why the value is an opaque, revocable token and not an identity.
     """
-    st.session_state.setdefault("cookies", {})
-    return CookieController()
-
-
-def _set_remember_me_cookie(user_id: int) -> None:
-    _cookie_writer().set(
-        REMEMBER_ME_COOKIE_NAME, user_id, max_age=REMEMBER_ME_MAX_AGE
+    st.html(
+        f"<script>document.cookie = {json.dumps(name)} + '=' + {json.dumps(value)}"
+        f" + '; path=/; max-age={int(max_age)}; SameSite=Lax';</script>",
+        unsafe_allow_javascript=True,
     )
 
 
-def _clear_remember_me_cookie() -> None:
-    _cookie_writer().remove(REMEMBER_ME_COOKIE_NAME)
+def flush_remember_me() -> None:
+    """Apply a pending remember-me cookie write or clear.
 
+    The cookie can only be handed to the browser as part of a run's output, so
+    the action is queued by ``login``/``logout`` and emitted here on a run that
+    finishes without an ``st.rerun()``. Doing it inline would race that rerun:
+    the rerun replaces the page's contents, tearing the ``<script>`` element
+    down before the browser has run it — which is why the cookie silently never
+    landed before.
 
-def _flush_remember_me() -> None:
-    """Apply pending remember-me cookie writes/clears on a run that completes.
-
-    The cookie is written (or removed) by a JS iframe — a custom component whose
-    frontend executes asynchronously. Creating that element *here*, on a run
-    that finishes without an ``st.rerun()``, gives the browser time to execute
-    the write before the element is torn down. Calling it inside the login or
-    logout run would race the guard's immediate ``st.rerun()`` and the cookie
-    would never land in the browser (the bug this fixes).
-
-    Called at the top of every guarded page's run, so the pending action is
-    applied on the first clean run after it was queued.
+    Called from ``app.py`` on every run (so it also fires on the public sign-in
+    page, where no guard runs) and again from ``require_roles``, where the
+    second call is a no-op because the pending flags were already popped.
     """
-    pending_id = st.session_state.pop(_PENDING_REMEMBER_ME, None)
-    if pending_id is not None:
-        _set_remember_me_cookie(pending_id)
+    token = st.session_state.pop(_PENDING_REMEMBER_ME, None)
+    if token:
+        _render_cookie_write(
+            REMEMBER_ME_COOKIE_NAME, token, max_age=REMEMBER_ME_MAX_AGE
+        )
     if st.session_state.pop(_CLEAR_REMEMBER_ME, False):
-        _clear_remember_me_cookie()
+        _render_cookie_write(REMEMBER_ME_COOKIE_NAME, "", max_age=0)
 
 
 def logout() -> None:
-    """Forget the current user, clear the remember-me cookie, and reload."""
+    """Forget the current user, revoke their session, and reload.
+
+    The session is deleted server-side, not merely cleared from the browser: a
+    copy of the cookie left on disk (or in another tab) is dead the moment the
+    token is gone, so logout actually ends the session rather than just hiding
+    it from this browser.
+    """
+    token = st.session_state.pop(_SESSION_TOKEN, None)
+    if token is not None:
+        get_storage().delete_session(token)
     st.session_state.pop("user", None)
     st.session_state[_PENDING_REMEMBER_ME] = None
     st.session_state[_CLEAR_REMEMBER_ME] = True
@@ -197,9 +233,9 @@ def render_login_form() -> User | None:
     expected to ``st.rerun()`` so the page re-renders as authorized), or
     ``None`` when the form wasn't submitted or the credentials were wrong.
 
-    With "Remember me" checked, the browser cookie is *not* written here — it
-    would race the post-login ``st.rerun()``. Instead the user id is queued in
-    session state and ``_flush_remember_me`` writes it on the next clean run.
+    With "Remember me" checked, ``login`` opens a session and queues its token;
+    the browser cookie itself is written on the next clean run (see
+    ``_flush_remember_me``).
     """
     st.subheader("Sign in")
     st.caption("Log in to access the portal.")
@@ -212,15 +248,25 @@ def render_login_form() -> User | None:
             if not username or not password:
                 st.error("Enter a username and password.")
                 return None
-            user = login(username, password)
+            user = login(username, password, remember_me=remember_me)
             if user is None:
                 st.error("Invalid username or password.")
                 return None
-            if remember_me:
-                # Deferred to the post-login run (see ``_flush_remember_me``).
-                st.session_state[_PENDING_REMEMBER_ME] = user.id
             return user
     return None
+
+
+def landing_page_path(user: User) -> str:
+    """Path of the page ``user`` should land on after signing in.
+
+    Admins and teachers land on the admin page, everyone else on the student
+    one. A user holding both an admin role and ``student`` lands on the admin
+    side, matching the nav's precedence.
+    """
+    views = Path(__file__).parent / "views"
+    if any(role in user.roles for role in ADMIN_ROLES):
+        return str(views / "admin.py")
+    return str(views / "student.py")
 
 
 def render_sidebar_user() -> None:
@@ -248,9 +294,10 @@ def require_roles(*roles: RoleName) -> Callable:
 
         @functools.wraps(func)
         def func_wrapper(*args, **kwargs):
-            # Apply any queued remember-me cookie write/clear before the guard
-            # runs, so the browser gets the cookie on a run that completes.
-            _flush_remember_me()
+            # ``app.py`` already flushed this run; the second call is a no-op
+            # because the pending flags were popped there. Kept so a page driven
+            # directly (an AppTest guard page, say) still applies the cookie.
+            flush_remember_me()
 
             user = current_user()
             if user is None:
